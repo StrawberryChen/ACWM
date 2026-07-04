@@ -1,0 +1,83 @@
+seed: 42
+device: cpu
+
+data:
+  train_paths: []
+  val_paths: []
+  history_length: 4
+  batch_size: 32
+  num_workers: 0
+
+model:
+  agent_encoder:
+    name: gru
+    image_channels: 3
+    action_dim: 2
+    state_dim: 64
+    feature_dim: 128
+  environment_encoder:
+    name: cnn
+    image_channels: 3
+    state_dim: 128
+  agent_transition:
+    name: mlp
+    agent_dim: 64
+    action_dim: 2
+    hidden_dim: 128
+  environment_transition:
+    name: mlp
+    environment_dim: 128
+    agent_dim: 64
+    hidden_dim: 256
+
+training:
+  epochs: 20
+  mode: one_step
+  optimizer: adam
+  learning_rate: 0.0003
+  weight_decay: 0.0
+  rollout_length: 5
+  loss_weights:
+    agent: 1.0
+    environment: 1.0
+    goal: 1.0
+  checkpoint: outputs/acwm.pt
+  best_checkpoint: outputs/acwm_best.pt
+  metrics_file: outputs/metrics.jsonl
+
+validation:
+  prediction_video_interval: 1
+  prediction_video_samples: 32
+  planning_interval: 5
+  planning_episodes: 100
+  planning_videos: 3
+  video_dir: outputs/videos
+
+wandb:
+  enabled: true
+  project: acwm
+  entity: null
+  name: null
+  mode: online
+
+planner:
+  horizon: 10
+  action_dim: 2
+  action_low: 0.0
+  action_high: 512.0
+  population: 256
+  elites: 32
+  iterations: 5
+
+environment:
+  env_id: gym_pusht/PushT-v0
+  observation_width: 96
+  observation_height: 96
+  max_steps: 300
+  success_threshold: 0.95
+  seed: 1000
+  video_fps: 20
+  # Optional exact goal RGB image; when null, goal_reset_state is rendered instead.
+  goal_image: null
+  # [agent_x, agent_y, block_x, block_y, block_angle] used to render goal latent.
+  goal_reset_state: [50.0, 50.0, 256.0, 256.0, 0.785398]
