@@ -5,6 +5,7 @@ from typing import Iterable
 
 import torch
 from torch import nn
+from tqdm.auto import tqdm
 
 from losses import AgentPredictionLoss, EnvironmentPredictionLoss, GoalConsistencyLoss
 
@@ -55,11 +56,15 @@ class ACWMTrainer:
         self.optimizer.step()
         return {key: value.detach().item() for key, value in losses.items()}
 
-    def fit_epoch(self, loader: Iterable[dict[str, torch.Tensor]], mode: str = "one_step") -> dict[str, float]:
+    def fit_epoch(self, loader: Iterable[dict[str, torch.Tensor]], mode: str = "one_step",
+                  description: str = "Training") -> dict[str, float]:
         totals: dict[str, float] = defaultdict(float)
         count = 0
-        for batch in loader:
+        progress = tqdm(loader, desc=description, dynamic_ncols=True, leave=True)
+        for batch in progress:
             count += 1
-            for key, value in self.train_step(batch, mode).items():
+            step_metrics = self.train_step(batch, mode)
+            for key, value in step_metrics.items():
                 totals[key] += value
+            progress.set_postfix(loss=f"{step_metrics['loss']:.5f}")
         return {key: value / max(count, 1) for key, value in totals.items()}

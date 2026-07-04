@@ -6,6 +6,7 @@ from typing import Any
 
 import numpy as np
 import torch
+from tqdm.auto import tqdm
 
 
 def _image_tensor(observation: Any, device: torch.device) -> torch.Tensor:
@@ -70,7 +71,8 @@ class PlanningEvaluator:
         goal = self._goal_frame(goal_env)
         goal_env.close()
         successes, rewards, video_paths = 0, [], []
-        for episode in range(episodes):
+        progress = tqdm(range(episodes), desc="Push-T planning", dynamic_ncols=True, leave=True)
+        for episode in progress:
             env = self._make_env()
             observation, _ = env.reset(seed=self.config.get("seed", 0) + episode)
             current = _image_tensor(observation, self.device)
@@ -79,7 +81,7 @@ class PlanningEvaluator:
                             maxlen=max(self.history_length - 1, 1))
             video = [env.render()] if episode < videos_to_save else []
             episode_reward, succeeded = 0.0, False
-            for _ in range(self.config.get("max_steps", 300)):
+            for step in range(self.config.get("max_steps", 300)):
                 history_frames = torch.stack(tuple(frames)).unsqueeze(0)
                 history_actions = (torch.stack(tuple(actions)).unsqueeze(0) if self.history_length > 1
                                    else torch.empty(1, 0, self.action_dim, device=self.device))
@@ -94,10 +96,15 @@ class PlanningEvaluator:
                 if video:
                     video.append(env.render())
                 succeeded = bool(terminated or info.get("is_success", False) or reward >= self.config.get("success_threshold", 0.95))
+                if step % 10 == 0:
+                    progress.set_postfix(episode=episode + 1, step=step + 1,
+                                         successes=f"{successes}/{episode}", reward=f"{episode_reward:.3f}")
                 if terminated or truncated:
                     break
             successes += int(succeeded)
             rewards.append(episode_reward)
+            progress.set_postfix(successes=f"{successes}/{episode + 1}",
+                                 success_rate=f"{successes / (episode + 1):.1%}")
             if video:
                 path = Path(video_dir or "outputs/videos") / f"planning_episode_{episode:03d}.mp4"
                 path.parent.mkdir(parents=True, exist_ok=True)

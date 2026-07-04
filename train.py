@@ -50,7 +50,8 @@ def main() -> None:
     validation = config["validation"]
     best_success_rate = -1.0
     for epoch in range(1, training["epochs"] + 1):
-        train_metrics = trainer.fit_epoch(train_loader, mode)
+        print(f"\nEpoch {epoch}/{training['epochs']}")
+        train_metrics = trainer.fit_epoch(train_loader, mode, f"Training {epoch}/{training['epochs']}")
         val_metrics = validate_prediction(trainer, val_loader)
         metrics = {**{f"train/{key}": value for key, value in train_metrics.items()},
                    **{f"validation/{key}": value for key, value in val_metrics.items()}}
@@ -60,6 +61,7 @@ def main() -> None:
                                       validation.get("prediction_video_samples", 32))
             metrics["validation/prediction_animation"] = logger.video(prediction_path, fps=4)
         if epoch % validation.get("planning_interval", 5) == 0:
+            print(f"Running {validation.get('planning_episodes', 100)} Push-T planning episodes...")
             result = planning_evaluator.evaluate(
                 model,
                 episodes=validation.get("planning_episodes", 100),

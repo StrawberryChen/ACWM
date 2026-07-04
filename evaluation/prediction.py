@@ -4,6 +4,7 @@ from typing import Iterable
 
 import numpy as np
 import torch
+from tqdm.auto import tqdm
 
 
 @torch.no_grad()
@@ -11,10 +12,12 @@ def validate_prediction(trainer, loader: Iterable[dict[str, torch.Tensor]]) -> d
     trainer.model.eval()
     totals: dict[str, float] = defaultdict(float)
     count = 0
-    for batch in loader:
+    progress = tqdm(loader, desc="Prediction validation", dynamic_ncols=True, leave=True)
+    for batch in progress:
         count += 1
         for key, value in trainer.compute_one_step(batch).items():
             totals[key] += value.item()
+        progress.set_postfix(loss=f"{totals['loss'] / count:.5f}")
     if count == 0:
         raise ValueError("validation loader is empty")
     return {key: value / count for key, value in totals.items()}
@@ -53,4 +56,3 @@ def save_prediction_animation(trainer, loader, path: str | Path, max_samples: in
                 imageio.mimsave(path, frames, fps=fps, loop=0)
                 return path
     raise ValueError("no validation samples available for animation")
-
