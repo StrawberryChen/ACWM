@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 
 from dataset.trajectory import Trajectory, TrajectoryDataset
 
@@ -24,3 +25,11 @@ def test_rollout_window():
     assert len(dataset) == 3
     assert torch.equal(sample["rollout_actions"], actions[2:4])
     assert torch.equal(sample["goal_frame"], frames[4])
+
+
+def test_npz_glob_loading(tmp_path):
+    for index in range(2):
+        np.savez(tmp_path / f"episode_{index}.npz", frames=np.zeros((4, 8, 8, 3), dtype=np.uint8),
+                 actions=np.zeros((3, 2), dtype=np.float32))
+    dataset = TrajectoryDataset.from_npz([str(tmp_path / "*.npz")], history_length=2)
+    assert len(dataset) == 4

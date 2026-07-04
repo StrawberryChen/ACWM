@@ -11,7 +11,7 @@ dependencies = ["torch>=2.1", "numpy>=1.24", "PyYAML>=6.0", "matplotlib>=3.7"]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.4"]
-colab = ["wandb>=0.17", "gymnasium>=0.29", "gym-pusht>=0.1.5", "imageio>=2.34", "imageio-ffmpeg>=0.5", "Pillow>=10.0"]
+colab = ["wandb>=0.17", "datasets>=2.19", "gymnasium>=0.29", "gym-pusht>=0.1.5", "imageio>=2.34", "imageio-ffmpeg>=0.5", "Pillow>=10.0"]
 
 [tool.setuptools.packages.find]
 where = ["."]

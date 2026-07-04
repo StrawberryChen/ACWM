@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import glob
 from pathlib import Path
 from typing import Sequence
 
@@ -55,7 +56,12 @@ class TrajectoryDataset(Dataset):
     def from_npz(cls, paths: Sequence[str | Path], history_length: int = 4,
                  rollout_length: int = 1) -> "TrajectoryDataset":
         trajectories = []
+        expanded_paths: list[str] = []
         for path in paths:
+            path = str(path)
+            matches = sorted(glob.glob(path))
+            expanded_paths.extend(matches if matches else [path])
+        for path in expanded_paths:
             with np.load(path) as data:
                 trajectories.append(Trajectory(_to_frames(data["frames"]), torch.as_tensor(data["actions"]).float()))
         return cls(trajectories, history_length, rollout_length)

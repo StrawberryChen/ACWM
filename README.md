@@ -28,8 +28,12 @@ pytest -q
 python train.py --config configs/default.yaml
 ```
 
-训练前在 YAML 的 `data.paths` 填入轨迹文件。模型、优化器、学习率、latent
+训练前在 YAML 的 `data.train_paths` 和 `data.val_paths` 填入轨迹文件。模型、优化器、学习率、latent
 维度、rollout 长度及 loss 权重均由配置控制。
+
+在 Colab 中无需手动寻找数据：`scripts/prepare_pusht.py` 会从 Hugging Face 的
+`lerobot/pusht_image` 下载数据，按完整 episode 划分 train/validation，转换为
+ACWM NPZ，并生成训练配置。详见 [`COLAB.md`](COLAB.md)。
 
 ## 模块边界
 

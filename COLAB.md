@@ -17,8 +17,15 @@ drive.mount('/content/drive')
 Drive 上的绝对路径。训练集与验证集应按 trajectory 分开，不要将同一轨迹的窗口
 随机拆到两边。
 
+更快捷的做法是直接下载并转换官方 LeRobot Push-T 数据。下面的命令会按 episode
+划分训练/验证集、写入 Google Drive，并自动生成 `configs/colab.yaml`：
+
 ```bash
-!python train.py --config configs/default.yaml
+!python scripts/prepare_pusht.py --output-root /content/drive/MyDrive/ACWM
+```
+
+```bash
+!python train.py --config configs/colab.yaml
 ```
 
 运行期间可以在 W&B 查看：
