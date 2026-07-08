@@ -77,6 +77,7 @@ class PlanningEvaluator:
         goal = self._goal_frame(goal_env)
         goal_env.close()
         successes, rewards, video_paths = 0, [], []
+        replan_interval = max(1, int(self.config.get("replan_interval", 1)))
         progress = tqdm(range(episodes), desc="Push-T planning", dynamic_ncols=True, leave=True)
         for episode in progress:
             env = self._make_env()
@@ -87,12 +88,15 @@ class PlanningEvaluator:
                             maxlen=max(self.history_length - 1, 1))
             video = [env.render()] if episode < videos_to_save else []
             episode_reward, succeeded = 0.0, False
+            action_queue: deque[torch.Tensor] = deque()
             for step in range(self.config.get("max_steps", 300)):
-                history_frames = torch.stack(tuple(frames)).unsqueeze(0)
-                history_actions = (torch.stack(tuple(actions)).unsqueeze(0) if self.history_length > 1
-                                   else torch.empty(1, 0, self.action_dim, device=self.device))
-                planned = self.planner.plan(model, history_frames, history_actions, current.unsqueeze(0), goal)
-                action = planned[0, 0]
+                if not action_queue:
+                    history_frames = torch.stack(tuple(frames)).unsqueeze(0)
+                    history_actions = (torch.stack(tuple(actions)).unsqueeze(0) if self.history_length > 1
+                                       else torch.empty(1, 0, self.action_dim, device=self.device))
+                    planned = self.planner.plan(model, history_frames, history_actions, current.unsqueeze(0), goal)
+                    action_queue.extend(planned[0, :replan_interval].unbind(0))
+                action = action_queue.popleft()
                 observation, reward, terminated, truncated, info = env.step(action.cpu().numpy())
                 episode_reward = max(episode_reward, float(reward))
                 current = _image_tensor(observation, self.device)

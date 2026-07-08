@@ -35,6 +35,8 @@ def save_episode(dataset, indices: list[int], path: Path) -> None:
 def write_colab_config(args: argparse.Namespace, root: Path) -> None:
     with open(args.base_config, encoding="utf-8") as stream:
         config = yaml.safe_load(stream)
+    # This generated configuration is specifically for a GPU Colab runtime.
+    config["device"] = "cuda"
     config["data"]["train_paths"] = [str(root / "data/train/*.npz")]
     config["data"]["val_paths"] = [str(root / "data/val/*.npz")]
     config["training"]["checkpoint"] = str(root / "checkpoints/acwm_latest.pt")

@@ -22,6 +22,10 @@ def main() -> None:
     args = parser.parse_args()
     config = load_config(args.config)
     torch.manual_seed(config.get("seed", 42))
+    if config.get("device") == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("config requests CUDA, but no GPU is available; select a GPU Colab runtime")
+    if torch.cuda.is_available() and config.get("device") == "cpu":
+        print("Warning: CUDA is available but config.device=cpu; planning and training will be much slower.")
     data_config = config["data"]
     train_paths = data_config.get("train_paths", data_config.get("paths", []))
     val_paths = data_config.get("val_paths", [])
