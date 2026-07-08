@@ -13,6 +13,9 @@ drive.mount('/content/drive')
 !wandb login
 ```
 
+The `colab` extra pins Pymunk below version 7 because `gym-pusht 0.1.x` still uses
+the collision-handler API removed by Pymunk 7.
+
 将 `configs/default.yaml` 中的 `data.train_paths`、`data.val_paths` 改为 Google
 Drive 上的绝对路径。训练集与验证集应按 trajectory 分开，不要将同一轨迹的窗口
 随机拆到两边。

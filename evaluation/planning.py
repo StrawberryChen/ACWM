@@ -38,8 +38,14 @@ class PlanningEvaluator:
         try:
             import gymnasium as gym
             import gym_pusht  # noqa: F401 - registers gym_pusht/PushT-v0
+            import pymunk
         except ImportError as error:
             raise ImportError("planning validation requires gymnasium and gym-pusht") from error
+        if not hasattr(pymunk.Space, "add_collision_handler"):
+            raise RuntimeError(
+                "gym-pusht 0.1.x is incompatible with Pymunk 7+. "
+                "Install the compatible version with: pip install 'pymunk>=6.6,<7'"
+            )
         return gym.make(
             self.config.get("env_id", "gym_pusht/PushT-v0"),
             obs_type="pixels",
