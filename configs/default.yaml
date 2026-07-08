@@ -5,42 +5,57 @@ data:
   train_paths: []
   val_paths: []
   history_length: 4
-  batch_size: 32
+  batch_size: 16
   num_workers: 0
 
 model:
   agent_encoder:
-    name: gru
+    name: vit_tiny_gru
     image_channels: 3
     action_dim: 2
-    state_dim: 64
-    feature_dim: 128
+    state_dim: 192
+    feature_dim: 192
+    model_name: vit_tiny_patch16_224.augreg_in21k_ft_in1k
+    pretrained: true
+    image_size: 224
+    trainable: true
   environment_encoder:
-    name: cnn
+    name: vit_tiny
     image_channels: 3
-    state_dim: 128
+    state_dim: 192
+    model_name: vit_tiny_patch16_224.augreg_in21k_ft_in1k
+    pretrained: true
+    image_size: 224
+    trainable: true
   agent_transition:
     name: mlp
-    agent_dim: 64
+    agent_dim: 192
     action_dim: 2
-    hidden_dim: 128
+    hidden_dim: 384
   environment_transition:
     name: mlp
-    environment_dim: 128
-    agent_dim: 64
-    hidden_dim: 256
+    environment_dim: 192
+    agent_dim: 192
+    hidden_dim: 384
 
 training:
   epochs: 20
   mode: one_step
-  optimizer: adam
-  learning_rate: 0.0003
-  weight_decay: 0.0
+  optimizer: adamw
+  learning_rate: 0.00005
+  weight_decay: 0.001
+  amp: true
+  gradient_clip_norm: 1.0
   rollout_length: 5
   loss_weights:
     agent: 1.0
     environment: 1.0
+    agent_sigreg: 0.09
+    environment_sigreg: 0.09
     goal: 1.0
+  sigreg:
+    knots: 17
+    num_projections: 1024
   checkpoint: outputs/acwm.pt
   best_checkpoint: outputs/acwm_best.pt
   metrics_file: outputs/metrics.jsonl

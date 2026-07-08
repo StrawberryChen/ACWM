@@ -7,14 +7,16 @@ import torch
 from torch import nn
 from tqdm.auto import tqdm
 
-from losses import AgentPredictionLoss, EnvironmentPredictionLoss, GoalConsistencyLoss
+from losses import AgentPredictionLoss, EnvironmentPredictionLoss, GoalConsistencyLoss, SIGRegLoss
 
 
 class ACWMTrainer:
     """Supports one-step batches and optional latent multi-step rollout batches."""
 
     def __init__(self, model: nn.Module, optimizer: torch.optim.Optimizer,
-                 loss_weights: dict[str, float], device: str | torch.device = "cpu"):
+                 loss_weights: dict[str, float], device: str | torch.device = "cpu",
+                 sigreg_config: dict | None = None, amp: bool = False,
+                 gradient_clip_norm: float | None = None):
         self.model = model.to(device)
         self.optimizer = optimizer
         self.device = torch.device(device)
@@ -22,6 +24,10 @@ class ACWMTrainer:
         self.agent_loss = AgentPredictionLoss()
         self.environment_loss = EnvironmentPredictionLoss()
         self.goal_loss = GoalConsistencyLoss()
+        self.sigreg_loss = SIGRegLoss(**(sigreg_config or {})).to(device)
+        self.amp_enabled = bool(amp and self.device.type == "cuda")
+        self.gradient_clip_norm = gradient_clip_norm
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.amp_enabled)
 
     def _move(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         return {key: value.to(self.device) for key, value in batch.items()}
@@ -34,8 +40,23 @@ class ACWMTrainer:
         target_environment = self.model.environment_encoder(batch["next_frame"])
         agent_loss = self.agent_loss(prediction.agent, target_agent)
         environment_loss = self.environment_loss(prediction.environment, target_environment)
-        total = self.weights.get("agent", 1.0) * agent_loss + self.weights.get("environment", 1.0) * environment_loss
-        return {"loss": total, "agent_loss": agent_loss, "environment_loss": environment_loss}
+        agent_embeddings = torch.stack((agent, target_agent), dim=0)
+        environment_embeddings = torch.stack((environment, target_environment), dim=0)
+        agent_sigreg = self.sigreg_loss(agent_embeddings)
+        environment_sigreg = self.sigreg_loss(environment_embeddings)
+        total = (self.weights.get("agent", 1.0) * agent_loss
+                 + self.weights.get("environment", 1.0) * environment_loss
+                 + self.weights.get("agent_sigreg", 0.1) * agent_sigreg
+                 + self.weights.get("environment_sigreg", 0.1) * environment_sigreg)
+        return {
+            "loss": total,
+            "agent_loss": agent_loss,
+            "environment_loss": environment_loss,
+            "agent_sigreg_loss": agent_sigreg,
+            "environment_sigreg_loss": environment_sigreg,
+            "agent_latent_std": agent_embeddings.std(dim=(0, 1)).mean(),
+            "environment_latent_std": environment_embeddings.std(dim=(0, 1)).mean(),
+        }
 
     def compute_rollout(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """Expected extra fields: rollout_actions [B,L,A], goal_frame [B,C,H,W]."""
@@ -51,9 +72,14 @@ class ACWMTrainer:
         self.optimizer.zero_grad(set_to_none=True)
         if mode not in {"one_step", "rollout"}:
             raise ValueError("mode must be 'one_step' or 'rollout'")
-        losses = self.compute_one_step(batch) if mode == "one_step" else self.compute_rollout(batch)
-        losses["loss"].backward()
-        self.optimizer.step()
+        with torch.autocast(device_type=self.device.type, dtype=torch.float16, enabled=self.amp_enabled):
+            losses = self.compute_one_step(batch) if mode == "one_step" else self.compute_rollout(batch)
+        self.scaler.scale(losses["loss"]).backward()
+        if self.gradient_clip_norm is not None:
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip_norm)
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
         return {key: value.detach().item() for key, value in losses.items()}
 
     def fit_epoch(self, loader: Iterable[dict[str, torch.Tensor]], mode: str = "one_step",

@@ -35,3 +35,9 @@ def test_rollout_is_differentiable():
     assert model.agent_transition.delta[0].weight.grad is not None
     assert model.environment_transition.delta[0].weight.grad is not None
 
+
+def test_planning_cost_excludes_agent_state():
+    model = build_model(configuration())
+    final_environment = torch.tensor([[1.0, 2.0]])
+    goal_environment = torch.tensor([[1.0, 4.0]])
+    assert torch.equal(model.planning_cost(final_environment, goal_environment), torch.tensor([2.0]))

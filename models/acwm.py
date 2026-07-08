@@ -39,3 +39,12 @@ class AgentCentricWorldModel(nn.Module):
             predictions.append(prediction)
             agent_state, environment_state = prediction.agent, prediction.environment
         return predictions
+
+    @staticmethod
+    def planning_cost(final_environment: torch.Tensor, goal_environment: torch.Tensor) -> torch.Tensor:
+        """Task cost intentionally excludes Agent State.
+
+        Agent remains the causal mediator inside rollout, but its final position
+        is never part of goal scoring.
+        """
+        return (final_environment - goal_environment).square().mean(dim=-1)

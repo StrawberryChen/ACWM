@@ -1,6 +1,6 @@
 # Agent-Centric World Model (ACWM) v0.1
 
-ACWM 将世界 latent 拆成可控的 **Agent State** 与完整观察对应的
+ACWM 将世界 latent 拆成可控的 **Agent State** 与任务环境对应的
 **Environment State**。其结构约束是：
 
 ```text
@@ -9,6 +9,14 @@ Action -> Agent State -> Environment State
 
 `EnvironmentTransition.forward(environment_state, next_agent_state)` 的接口中没有
 action，因此动作无法绕过 Agent State 直接改变环境状态。
+
+默认视觉 backbone 是两个参数完全独立的 ImageNet 预训练 ViT-Tiny。Agent
+Encoder 在逐帧 ViT 特征之后使用 GRU；Environment Encoder 只处理当前帧。旧 CNN
+encoder 仍保留在 registry 中用于消融。
+
+LeWorldModel 官方配置同样使用 ViT-Tiny，但从头训练；本项目按实验要求将
+`pretrained: true` 作为默认值，采用 ImageNet-21k 预训练并在 ImageNet-1k 微调的
+`timm/vit_tiny_patch16_224.augreg_in21k_ft_in1k` 初始化。
 
 ## 数据约定
 
@@ -40,11 +48,18 @@ ACWM NPZ，并生成训练配置。详见 [`COLAB.md`](COLAB.md)。
 - `dataset/`: 通用轨迹切窗
 - `models/encoder/`: 独立 Agent / Environment 编码器
 - `models/predictor/`: 两条严格分离的状态转移路径
-- `losses/`: agent、environment、goal consistency latent loss
+- `losses/`: agent、environment、goal consistency 和 SIGReg loss
 - `trainer/`: 单步训练及多步 goal rollout 接口
 - `planner/`: 可替换的 CEM latent planner
 - `visualization/`: loss、相似度和 PCA embedding 调试图
 - `configs/`, `utils/`: YAML 与组件 registry/factory
+
+Agent 与 Environment embedding 分别应用 LeWorldModel SIGReg，通过随机投影与
+Epps-Pulley 统计量约束 latent 接近各向同性高斯分布。默认使用 1024 projections、
+17 knots 和 0.09 权重，并在 W&B 记录两个 latent 的标准差。
+
+Planning rollout 内部继续遵守 `Action → Agent → Environment`，但 CEM cost 只接受
+final/goal Environment State；Agent State 不进入任务目标评分。
 
 v0.1 有意不包含图像重建、检测、scene graph、对象/关系标签或额外监督。
 环境 latent 是联合表示，不宣称其内部已自动形成可解释的对象分解。

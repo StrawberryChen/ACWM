@@ -33,10 +33,11 @@ class CEMPlanner:
                 flat_actions,
             )
             final = states[-1].environment.view(batch, self.population, -1)
-            cost = (final - goal[:, None]).square().mean(dim=-1)
+            # The goal criterion is environment-only. Agent latent participates
+            # in causal rollout but is deliberately absent from task scoring.
+            cost = model.planning_cost(final, goal[:, None])
             indices = cost.topk(self.elites, largest=False).indices
             elite = actions.gather(1, indices[:, :, None, None].expand(-1, -1, self.horizon, self.action_dim))
             elite_mean, elite_std = elite.mean(1, keepdim=True), elite.std(1, keepdim=True).clamp_min(1e-4)
             mean, std = elite_mean.expand_as(mean), elite_std.expand_as(std)
         return mean[:, 0]
-

@@ -1,5 +1,4 @@
-from .agent import GRUAgentEncoder
-from .environment import CNNEnvironmentEncoder
+from .agent import GRUAgentEncoder, GRUViTAgentEncoder
+from .environment import CNNEnvironmentEncoder, ViTEnvironmentEncoder
 
-__all__ = ["GRUAgentEncoder", "CNNEnvironmentEncoder"]
-
+__all__ = ["GRUAgentEncoder", "GRUViTAgentEncoder", "CNNEnvironmentEncoder", "ViTEnvironmentEncoder"]

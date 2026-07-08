@@ -24,7 +24,8 @@ def test_one_step_training():
     trainer = ACWMTrainer(model, torch.optim.Adam(model.parameters()), {"agent": 1, "environment": 1})
     metrics = trainer.train_step(batch())
     assert metrics["loss"] > 0
-    assert set(metrics) == {"loss", "agent_loss", "environment_loss"}
+    assert {"loss", "agent_loss", "environment_loss", "agent_sigreg_loss",
+            "environment_sigreg_loss", "agent_latent_std", "environment_latent_std"} == set(metrics)
 
 
 def test_cem_planner_shape_and_bounds():
@@ -35,4 +36,3 @@ def test_cem_planner_shape_and_bounds():
                            data["current_frame"], data["next_frame"])
     assert actions.shape == (2, 3, 2)
     assert torch.all(actions <= 1) and torch.all(actions >= -1)
-
