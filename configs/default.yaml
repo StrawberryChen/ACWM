@@ -4,7 +4,7 @@ device: cpu
 data:
   train_paths: []
   val_paths: []
-  history_length: 4
+  history_length: 3
   batch_size: 16
   num_workers: 0
 
@@ -37,6 +37,17 @@ model:
     environment_dim: 192
     agent_dim: 192
     hidden_dim: 384
+  predictor:
+    # Switch to "adaln" to use the retained baseline transition path.
+    type: motion_token
+    action_dim: 2
+    hidden_dim: 192
+    history_size: 3
+    motion_layers: 2
+    transformer_layers: 2
+    num_heads: 3
+    dropout: 0.0
+    flow_hidden_dim: 384
 
 training:
   epochs: 20
@@ -48,6 +59,9 @@ training:
   gradient_clip_norm: 1.0
   rollout_length: 5
   loss_weights:
+    prediction: 1.0
+    flow: 1.0
+    sigreg: 0.09
     agent: 1.0
     environment: 1.0
     agent_sigreg: 0.09

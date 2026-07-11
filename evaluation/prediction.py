@@ -38,9 +38,12 @@ def save_prediction_animation(trainer, loader, path: str | Path, max_samples: in
         batch = trainer._move(raw_batch)
         agent, environment = trainer.model.encode(batch["history_frames"], batch["history_actions"], batch["current_frame"])
         prediction = trainer.model.step(agent, environment, batch["current_action"])
-        target_agent = trainer.model.agent_encoder(batch["next_history_frames"], batch["next_history_actions"])
         target_environment = trainer.model.environment_encoder(batch["next_frame"])
-        agent_error = (prediction.agent - target_agent).square().mean(-1)
+        if getattr(trainer.model, "predictor_type", "adaln") == "motion_token":
+            agent_error = torch.zeros_like((prediction.environment - target_environment).square().mean(-1))
+        else:
+            target_agent = trainer.model.agent_encoder(batch["next_history_frames"], batch["next_history_actions"])
+            agent_error = (prediction.agent - target_agent).square().mean(-1)
         environment_error = (prediction.environment - target_environment).square().mean(-1)
         for index in range(len(agent_error)):
             image = (batch["next_frame"][index].detach().cpu().clamp(0, 1).permute(1, 2, 0).numpy() * 255).astype(np.uint8)

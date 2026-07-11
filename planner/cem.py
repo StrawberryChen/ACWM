@@ -27,11 +27,9 @@ class CEMPlanner:
         for _ in range(self.iterations):
             actions = (mean + std * torch.randn_like(mean)).clamp(low, high)
             flat_actions = actions.flatten(0, 1)
-            states = model.rollout(
-                agent[:, None].expand(-1, self.population, -1).flatten(0, 1),
-                environment[:, None].expand(-1, self.population, -1).flatten(0, 1),
-                flat_actions,
-            )
+            agent_population = agent[:, None].expand(-1, self.population, *agent.shape[1:]).flatten(0, 1)
+            environment_population = environment[:, None].expand(-1, self.population, -1).flatten(0, 1)
+            states = model.rollout(agent_population, environment_population, flat_actions)
             final = states[-1].environment.view(batch, self.population, -1)
             # The goal criterion is environment-only. Agent latent participates
             # in causal rollout but is deliberately absent from task scoring.

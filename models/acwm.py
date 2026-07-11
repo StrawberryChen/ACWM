@@ -8,37 +8,118 @@ from torch import nn
 class Prediction:
     agent: torch.Tensor
     environment: torch.Tensor
+    delta: torch.Tensor | None = None
 
 
 class AgentCentricWorldModel(nn.Module):
     """Composition root; individual components remain independently replaceable."""
 
     def __init__(self, agent_encoder: nn.Module, environment_encoder: nn.Module,
-                 agent_transition: nn.Module, environment_transition: nn.Module):
+                 agent_transition: nn.Module, environment_transition: nn.Module,
+                 predictor: nn.Module | None = None, predictor_type: str = "adaln",
+                 history_size: int = 3):
         super().__init__()
         self.agent_encoder = agent_encoder
         self.environment_encoder = environment_encoder
         self.agent_transition = agent_transition
         self.environment_transition = environment_transition
+        self.predictor = predictor
+        self.predictor_type = predictor_type
+        self.history_size = history_size
+        self._last_history_actions: torch.Tensor | None = None
+
+    def encode_frames(self, history_frames: torch.Tensor) -> torch.Tensor:
+        """Encode frame windows without changing the Frame Encoder itself.
+
+        Input shape:  history_frames [B, T, C, H, W]
+        Output shape: frame_latents  [B, T, 192]
+        """
+        assert history_frames.ndim == 5, f"history_frames must be [B,T,C,H,W], got {tuple(history_frames.shape)}"
+        batch, steps = history_frames.shape[:2]
+        # flat_frames: [B*T, C, H, W]
+        flat_frames = history_frames.flatten(0, 1)
+        # flat_latents: [B*T, 192]
+        flat_latents = self.environment_encoder(flat_frames)
+        # frame_latents: [B, T, 192]
+        return flat_latents.view(batch, steps, -1)
 
     def encode(self, history_frames: torch.Tensor, history_actions: torch.Tensor,
                current_frame: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        self._last_history_actions = history_actions
+        if self.predictor_type == "motion_token":
+            frame_latents = self.encode_frames(history_frames)
+            assert frame_latents.shape[1] == self.history_size, (
+                f"motion_token expects history_size={self.history_size}, got {frame_latents.shape[1]}"
+            )
+            # Return full frame history as the rollout state, plus current z_t.
+            return frame_latents, frame_latents[:, -1]
         return self.agent_encoder(history_frames, history_actions), self.environment_encoder(current_frame)
 
     def step(self, agent_state: torch.Tensor, environment_state: torch.Tensor,
-             action: torch.Tensor) -> Prediction:
+             action: torch.Tensor, history_actions: torch.Tensor | None = None) -> Prediction:
+        if self.predictor_type == "motion_token":
+            assert self.predictor is not None, "motion_token predictor is not configured"
+            assert agent_state.ndim == 3, f"motion_token agent_state must be frame history [B,3,192], got {tuple(agent_state.shape)}"
+            action_window = self._action_window(action, agent_state.shape[0], history_actions)
+            # next_environment: [B, 192], delta: [B, 192]
+            next_environment, delta = self.predictor(agent_state, action_window)
+            # next_agent/history: [B, 3, 192] = [z_{t-1}, z_t, z_pred]
+            next_agent = torch.cat((agent_state[:, 1:], next_environment[:, None]), dim=1)
+            return Prediction(next_agent, next_environment, delta)
         next_agent = self.agent_transition(agent_state, action)
         next_environment = self.environment_transition(environment_state, next_agent)
         return Prediction(next_agent, next_environment)
 
     def rollout(self, agent_state: torch.Tensor, environment_state: torch.Tensor,
-                actions: torch.Tensor) -> list[Prediction]:
+                actions: torch.Tensor, history_actions: torch.Tensor | None = None) -> list[Prediction]:
+        if self.predictor_type == "motion_token":
+            history_actions = self._initial_previous_actions(actions, history_actions)
         predictions = []
         for action in actions.unbind(dim=1):
-            prediction = self.step(agent_state, environment_state, action)
+            if self.predictor_type == "motion_token":
+                prediction = self.step(agent_state, environment_state, action, history_actions)
+                # Keep only the two previous actions; step() appends the current action.
+                # history_actions: [B, 2, A] = [a_{prev1}, a_current]
+                history_actions = torch.cat((history_actions[:, 1:], action[:, None]), dim=1)
+            else:
+                prediction = self.step(agent_state, environment_state, action)
             predictions.append(prediction)
             agent_state, environment_state = prediction.agent, prediction.environment
         return predictions
+
+    def _action_window(self, action: torch.Tensor, batch: int,
+                       history_actions: torch.Tensor | None) -> torch.Tensor:
+        if history_actions is None:
+            history_actions = self._initial_previous_actions(action[:, None], None)
+        if history_actions.shape[1] == self.history_size - 1:
+            # Training dataset provides [a_{t-2}, a_{t-1}] plus current action a_t.
+            history_actions = torch.cat((history_actions, action[:, None]), dim=1)
+        assert history_actions.ndim == 3, f"history_actions must be [B,3,A], got {tuple(history_actions.shape)}"
+        assert history_actions.shape[0] == batch, (
+            f"history_actions batch {history_actions.shape[0]} does not match state batch {batch}"
+        )
+        assert history_actions.shape[1] == self.history_size, (
+            f"motion_token expects {self.history_size} actions, got {history_actions.shape[1]}"
+        )
+        return history_actions
+
+    def _initial_previous_actions(self, actions: torch.Tensor,
+                                  history_actions: torch.Tensor | None) -> torch.Tensor:
+        if history_actions is None:
+            history_actions = self._last_history_actions
+        if history_actions is not None and history_actions.shape[1] == self.history_size:
+            history_actions = history_actions[:, -self.history_size + 1:]
+        if history_actions is None:
+            zeros = torch.zeros(actions.shape[0], self.history_size - 1, actions.shape[-1],
+                                device=actions.device, dtype=actions.dtype)
+            return zeros
+        if history_actions.shape[0] != actions.shape[0]:
+            assert actions.shape[0] % history_actions.shape[0] == 0, (
+                "cannot broadcast encoded history actions to rollout population"
+            )
+            repeat = actions.shape[0] // history_actions.shape[0]
+            history_actions = history_actions.repeat_interleave(repeat, dim=0)
+        return history_actions.to(device=actions.device, dtype=actions.dtype)
 
     @staticmethod
     def planning_cost(final_environment: torch.Tensor, goal_environment: torch.Tensor) -> torch.Tensor:

@@ -35,9 +35,37 @@ class ACWMTrainer:
     def compute_one_step(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         batch = self._move(batch)
         agent, environment = self.model.encode(batch["history_frames"], batch["history_actions"], batch["current_frame"])
+        target_environment = self.model.environment_encoder(batch["next_frame"])
+        if getattr(self.model, "predictor_type", "adaln") == "motion_token":
+            # history_actions: [B, 2, A], current_action: [B, A]
+            # action_window:    [B, 3, A] = [a_{t-2}, a_{t-1}, a_t]
+            action_window = torch.cat((batch["history_actions"], batch["current_action"][:, None]), dim=1)
+            assert action_window.shape[1] == 3, f"motion_token expects [B,3,A], got {tuple(action_window.shape)}"
+            prediction = self.model.step(agent, environment, batch["current_action"], action_window)
+            # prediction.environment: [B, 192] = z_pred_next
+            prediction_loss = self.environment_loss(prediction.environment, target_environment)
+            # delta_target: [B, 192] = z_{t+1} - z_t
+            delta_target = target_environment - environment
+            assert prediction.delta is not None, "motion_token predictor must return delta_z"
+            flow_loss = nn.functional.mse_loss(prediction.delta, delta_target)
+            # sigreg embeddings: [T=2, B, 192]
+            embeddings = torch.stack((environment, target_environment), dim=0)
+            sigreg = self.sigreg_loss(embeddings)
+            total = (self.weights.get("prediction", self.weights.get("environment", 1.0)) * prediction_loss
+                     + self.weights.get("flow", 1.0) * flow_loss
+                     + self.weights.get("sigreg", self.weights.get("environment_sigreg", 0.1)) * sigreg)
+            return {
+                "loss": total,
+                "prediction_loss": prediction_loss,
+                "flow_loss": flow_loss,
+                "sigreg_loss": sigreg,
+                "latent_std": embeddings.std(dim=(0, 1)).mean(),
+                "environment_loss": prediction_loss,
+                "environment_sigreg_loss": sigreg,
+            }
+
         prediction = self.model.step(agent, environment, batch["current_action"])
         target_agent = self.model.agent_encoder(batch["next_history_frames"], batch["next_history_actions"])
-        target_environment = self.model.environment_encoder(batch["next_frame"])
         agent_loss = self.agent_loss(prediction.agent, target_agent)
         environment_loss = self.environment_loss(prediction.environment, target_environment)
         agent_embeddings = torch.stack((agent, target_agent), dim=0)
@@ -62,7 +90,7 @@ class ACWMTrainer:
         """Expected extra fields: rollout_actions [B,L,A], goal_frame [B,C,H,W]."""
         batch = self._move(batch)
         agent, environment = self.model.encode(batch["history_frames"], batch["history_actions"], batch["current_frame"])
-        predictions = self.model.rollout(agent, environment, batch["rollout_actions"])
+        predictions = self.model.rollout(agent, environment, batch["rollout_actions"], batch["history_actions"])
         goal = self.model.environment_encoder(batch["goal_frame"])
         loss = self.goal_loss(predictions[-1].environment, goal)
         return {"loss": self.weights.get("goal", 1.0) * loss, "goal_loss": loss}
