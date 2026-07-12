@@ -53,10 +53,10 @@ def test_cem_planner_shape_and_bounds():
 
 def test_motion_token_training_and_planner():
     model = build_model(motion_configuration())
-    trainer = ACWMTrainer(model, torch.optim.Adam(model.parameters()), {"prediction": 1, "flow": 1, "sigreg": 0.01})
+    trainer = ACWMTrainer(model, torch.optim.Adam(model.parameters()), {"prediction": 1, "sigreg": 0.01})
     metrics = trainer.train_step(motion_batch())
     assert metrics["loss"] > 0
-    assert {"loss", "prediction_loss", "flow_loss", "sigreg_loss", "latent_std",
+    assert {"loss", "prediction_loss", "sigreg_loss", "latent_std",
             "environment_loss", "environment_sigreg_loss"} == set(metrics)
     planner = CEMPlanner(horizon=3, action_dim=2, population=8, elites=2, iterations=2)
     data = motion_batch()

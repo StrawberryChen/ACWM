@@ -20,26 +20,37 @@ class ImageBackbone(nn.Module):
 
 
 class TimmViTBackbone(nn.Module):
-    """ImageNet-pretrained ViT-Tiny with LeWM-style CLS-token embedding.
+    """ViT-Tiny with LeWM-style CLS-token embedding.
 
-    Push-T observations are resized to the pretraining resolution and normalized
-    with ImageNet statistics. A projection keeps the downstream latent dimension
-    independently configurable.
+    Push-T observations are resized to the configured resolution. A projection
+    keeps the downstream latent dimension independently configurable.
     """
 
     def __init__(self, image_channels: int, output_dim: int,
-                 model_name: str = "vit_tiny_patch16_224.augreg_in21k_ft_in1k",
+                 model_name: str | None = "vit_tiny_patch16_224.augreg_in21k_ft_in1k",
                  pretrained: bool = True, image_size: int = 224,
-                 trainable: bool = True):
+                 trainable: bool = True, patch_size: int = 16):
         super().__init__()
         try:
             import timm
         except ImportError as error:
             raise ImportError("ViT encoder requires timm>=1.0") from error
         self.image_size = image_size
-        self.backbone = timm.create_model(
-            model_name, pretrained=pretrained, num_classes=0, in_chans=image_channels
-        )
+        if model_name is None:
+            from timm.models.vision_transformer import VisionTransformer
+            self.backbone = VisionTransformer(
+                img_size=image_size,
+                patch_size=patch_size,
+                in_chans=image_channels,
+                num_classes=0,
+                embed_dim=192,
+                depth=12,
+                num_heads=3,
+            )
+        else:
+            self.backbone = timm.create_model(
+                model_name, pretrained=pretrained, num_classes=0, in_chans=image_channels
+            )
         feature_dim = self.backbone.num_features
         self.projection = nn.Sequential(nn.Linear(feature_dim, output_dim), nn.LayerNorm(output_dim))
         self.register_buffer("mean", torch.tensor((0.485, 0.456, 0.406)).view(1, 3, 1, 1), persistent=False)

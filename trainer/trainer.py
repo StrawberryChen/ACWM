@@ -44,20 +44,14 @@ class ACWMTrainer:
             prediction = self.model.step(agent, environment, batch["current_action"], action_window)
             # prediction.environment: [B, 192] = z_pred_next
             prediction_loss = self.environment_loss(prediction.environment, target_environment)
-            # delta_target: [B, 192] = z_{t+1} - z_t
-            delta_target = target_environment - environment
-            assert prediction.delta is not None, "motion_token predictor must return delta_z"
-            flow_loss = nn.functional.mse_loss(prediction.delta, delta_target)
             # sigreg embeddings: [T=2, B, 192]
             embeddings = torch.stack((environment, target_environment), dim=0)
             sigreg = self.sigreg_loss(embeddings)
             total = (self.weights.get("prediction", self.weights.get("environment", 1.0)) * prediction_loss
-                     + self.weights.get("flow", 1.0) * flow_loss
                      + self.weights.get("sigreg", self.weights.get("environment_sigreg", 0.1)) * sigreg)
             return {
                 "loss": total,
                 "prediction_loss": prediction_loss,
-                "flow_loss": flow_loss,
                 "sigreg_loss": sigreg,
                 "latent_std": embeddings.std(dim=(0, 1)).mean(),
                 "environment_loss": prediction_loss,

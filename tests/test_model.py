@@ -78,3 +78,10 @@ def test_motion_token_predictor_shapes_and_rollout():
     assert len(predictions) == 4
     predictions[-1].environment.square().mean().backward()
     assert model.predictor.flow_head.net[0].weight.grad is not None
+    expected_mask = torch.tensor([
+        [False, True, True, True],
+        [False, False, True, True],
+        [False, False, False, False],
+        [False, False, False, False],
+    ])
+    assert torch.equal(model.predictor.state_action_transformer.attention_mask.cpu(), expected_mask)

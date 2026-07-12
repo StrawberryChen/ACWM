@@ -15,16 +15,18 @@ model:
     action_dim: 2
     state_dim: 192
     feature_dim: 192
-    model_name: vit_tiny_patch16_224.augreg_in21k_ft_in1k
-    pretrained: true
+    model_name: null
+    patch_size: 14
+    pretrained: false
     image_size: 224
     trainable: true
   environment_encoder:
     name: vit_tiny
     image_channels: 3
     state_dim: 192
-    model_name: vit_tiny_patch16_224.augreg_in21k_ft_in1k
-    pretrained: true
+    model_name: null
+    patch_size: 14
+    pretrained: false
     image_size: 224
     trainable: true
   agent_transition:
@@ -60,7 +62,6 @@ training:
   rollout_length: 5
   loss_weights:
     prediction: 1.0
-    flow: 1.0
     sigreg: 0.09
     agent: 1.0
     environment: 1.0
@@ -77,7 +78,7 @@ training:
 validation:
   prediction_video_interval: 1
   prediction_video_samples: 32
-  planning_interval: 5
+  planning_interval: 10
   planning_episodes: 100
   planning_videos: 3
   video_dir: outputs/videos

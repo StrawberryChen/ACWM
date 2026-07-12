@@ -3,18 +3,17 @@ from torch import nn
 
 
 class MotionEncoder(nn.Module):
-    """Encode a 3-step action history into one motion token.
+    """Encode a 3-step action-token history into one motion token.
 
-    Input shape:  history_actions [B, 3, action_dim]
-    Output shape: motion_token    [B, 1, 192]
+    Input shape:  action_tokens [B, 3, 192]
+    Output shape: motion_token  [B, 1, 192]
     """
 
-    def __init__(self, action_dim: int, hidden_dim: int = 192, num_layers: int = 2,
+    def __init__(self, hidden_dim: int = 192, num_layers: int = 2,
                  num_heads: int = 3, dropout: float = 0.0, history_size: int = 3):
         super().__init__()
         self.history_size = history_size
         self.hidden_dim = hidden_dim
-        self.action_projection = nn.Linear(action_dim, hidden_dim)
         self.temporal_embedding = nn.Parameter(torch.zeros(1, history_size, hidden_dim))
         layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim,
@@ -31,18 +30,18 @@ class MotionEncoder(nn.Module):
 
     def _reset_parameters(self) -> None:
         nn.init.trunc_normal_(self.temporal_embedding, std=0.02)
-        nn.init.xavier_uniform_(self.action_projection.weight)
-        nn.init.zeros_(self.action_projection.bias)
         nn.init.xavier_uniform_(self.motion_pool.weight)
         nn.init.zeros_(self.motion_pool.bias)
 
-    def forward(self, history_actions: torch.Tensor) -> torch.Tensor:
-        assert history_actions.ndim == 3, f"history_actions must be [B,3,A], got {tuple(history_actions.shape)}"
-        assert history_actions.shape[1] == self.history_size, (
-            f"MotionEncoder expects {self.history_size} actions, got {history_actions.shape[1]}"
+    def forward(self, action_tokens: torch.Tensor) -> torch.Tensor:
+        assert action_tokens.ndim == 3, f"action_tokens must be [B,3,192], got {tuple(action_tokens.shape)}"
+        assert action_tokens.shape[1] == self.history_size, (
+            f"MotionEncoder expects {self.history_size} action tokens, got {action_tokens.shape[1]}"
+        )
+        assert action_tokens.shape[-1] == self.hidden_dim, (
+            f"action token dim must be {self.hidden_dim}, got {action_tokens.shape[-1]}"
         )
         # action_tokens: [B, 3, 192]
-        action_tokens = self.action_projection(history_actions)
         action_tokens = action_tokens + self.temporal_embedding
         # encoded_actions: [B, 3, 192]
         encoded_actions = self.encoder(action_tokens)
@@ -52,7 +51,15 @@ class MotionEncoder(nn.Module):
 
 
 class StateActionTransformer(nn.Module):
-    """Bidirectional self-attention over 3 frame tokens plus 1 motion token."""
+    """Self-attention over 3 frame tokens plus 1 motion token with a fixed mask.
+
+    Token order: [z1, z2, z3, m]
+    Allowed attention:
+        z1 -> z1
+        z2 -> z1,z2
+        z3 -> z1,z2,z3,m
+        m  -> z1,z2,z3,m
+    """
 
     def __init__(self, hidden_dim: int = 192, num_layers: int = 2,
                  num_heads: int = 3, dropout: float = 0.0):
@@ -67,11 +74,24 @@ class StateActionTransformer(nn.Module):
             activation="gelu",
         )
         self.encoder = nn.TransformerEncoder(layer, num_layers=num_layers)
+        allowed = torch.tensor(
+            [
+                [True, False, False, False],
+                [True, True, False, False],
+                [True, True, True, True],
+                [True, True, True, True],
+            ],
+            dtype=torch.bool,
+        )
+        self.register_buffer("attention_mask", ~allowed, persistent=False)
 
     def forward(self, tokens: torch.Tensor) -> torch.Tensor:
         assert tokens.ndim == 3 and tokens.shape[1] == 4, f"tokens must be [B,4,192], got {tuple(tokens.shape)}"
-        # Bidirectional attention: no causal mask is passed.
-        return self.encoder(tokens)
+        assert tokens.shape[-1] == self.encoder.layers[0].linear2.out_features, (
+            f"token dim mismatch, got {tokens.shape[-1]}"
+        )
+        # attention_mask: [4, 4], True means "disallow attention" in nn.TransformerEncoder.
+        return self.encoder(tokens, mask=self.attention_mask)
 
 
 class FlowHead(nn.Module):
@@ -119,7 +139,8 @@ class MotionTokenPredictor(nn.Module):
         super().__init__()
         self.history_size = history_size
         self.hidden_dim = hidden_dim
-        self.motion_encoder = MotionEncoder(action_dim, hidden_dim, motion_layers, num_heads, dropout, history_size)
+        self.action_encoder = nn.Linear(action_dim, hidden_dim)
+        self.motion_encoder = MotionEncoder(hidden_dim, motion_layers, num_heads, dropout, history_size)
         self.frame_temporal_embedding = nn.Parameter(torch.zeros(1, history_size, hidden_dim))
         self.token_type_embedding = nn.Embedding(2, hidden_dim)
         self.state_action_transformer = StateActionTransformer(hidden_dim, transformer_layers, num_heads, dropout)
@@ -127,6 +148,8 @@ class MotionTokenPredictor(nn.Module):
         self._reset_parameters()
 
     def _reset_parameters(self) -> None:
+        nn.init.xavier_uniform_(self.action_encoder.weight)
+        nn.init.zeros_(self.action_encoder.bias)
         nn.init.trunc_normal_(self.frame_temporal_embedding, std=0.02)
         nn.init.trunc_normal_(self.token_type_embedding.weight, std=0.02)
 
@@ -147,6 +170,11 @@ class MotionTokenPredictor(nn.Module):
         frame_type = torch.zeros(batch, self.history_size, dtype=torch.long, device=device)
         motion_type = torch.ones(batch, 1, dtype=torch.long, device=device)
 
+        # action_tokens: [B, 3, 192]; the same Action Encoder is shared across all time steps.
+        action_tokens = self.action_encoder(history_actions)
+        assert action_tokens.shape == frame_latents.shape, (
+            f"action_tokens must be [B,3,192], got {tuple(action_tokens.shape)}"
+        )
         # frame_tokens: [B, 3, 192]
         frame_tokens = (
             frame_latents
@@ -154,7 +182,7 @@ class MotionTokenPredictor(nn.Module):
             + self.token_type_embedding(frame_type)
         )
         # motion_token: [B, 1, 192]
-        motion_token = self.motion_encoder(history_actions) + self.token_type_embedding(motion_type)
+        motion_token = self.motion_encoder(action_tokens) + self.token_type_embedding(motion_type)
         # tokens: [B, 4, 192]
         tokens = torch.cat((frame_tokens, motion_token), dim=1)
         # outputs: [B, 4, 192]

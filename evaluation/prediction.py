@@ -40,17 +40,21 @@ def save_prediction_animation(trainer, loader, path: str | Path, max_samples: in
         prediction = trainer.model.step(agent, environment, batch["current_action"])
         target_environment = trainer.model.environment_encoder(batch["next_frame"])
         if getattr(trainer.model, "predictor_type", "adaln") == "motion_token":
-            agent_error = torch.zeros_like((prediction.environment - target_environment).square().mean(-1))
+            agent_error = None
         else:
             target_agent = trainer.model.agent_encoder(batch["next_history_frames"], batch["next_history_actions"])
             agent_error = (prediction.agent - target_agent).square().mean(-1)
         environment_error = (prediction.environment - target_environment).square().mean(-1)
-        for index in range(len(agent_error)):
+        for index in range(len(environment_error)):
             image = (batch["next_frame"][index].detach().cpu().clamp(0, 1).permute(1, 2, 0).numpy() * 255).astype(np.uint8)
             canvas = Image.fromarray(image).resize((384, 384))
             draw = ImageDraw.Draw(canvas)
             draw.rectangle((0, 0, 384, 42), fill=(0, 0, 0))
-            draw.text((8, 6), f"agent MSE {agent_error[index]:.5f} | env MSE {environment_error[index]:.5f}", fill="white")
+            if agent_error is None:
+                text = f"MotionToken pred MSE {environment_error[index]:.5f}"
+            else:
+                text = f"agent MSE {agent_error[index]:.5f} | env MSE {environment_error[index]:.5f}"
+            draw.text((8, 6), text, fill="white")
             frames.append(np.asarray(canvas))
             seen += 1
             if seen >= max_samples:
