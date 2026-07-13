@@ -10,13 +10,10 @@ Action -> Agent State -> Environment State
 `EnvironmentTransition.forward(environment_state, next_agent_state)` 的接口中没有
 action，因此动作无法绕过 Agent State 直接改变环境状态。
 
-默认视觉 backbone 是两个参数完全独立的 ImageNet 预训练 ViT-Tiny。Agent
-Encoder 在逐帧 ViT 特征之后使用 GRU；Environment Encoder 只处理当前帧。旧 CNN
-encoder 仍保留在 registry 中用于消融。
-
-LeWorldModel 官方配置同样使用 ViT-Tiny，但从头训练；本项目按实验要求将
-`pretrained: true` 作为默认值，采用 ImageNet-21k 预训练并在 ImageNet-1k 微调的
-`timm/vit_tiny_patch16_224.augreg_in21k_ft_in1k` 初始化。
+默认视觉 backbone 对齐 LeWorldModel：ViT-Tiny、patch size 14、hidden dim 192、
+`pretrained: false`，端到端从头训练。Frame Encoder 使用最后一层 CLS token，
+并接官方风格 projector：`Linear -> BatchNorm1d -> GELU -> Linear`，默认
+hidden dim 为 2048、输出 dim 为 192。旧 CNN encoder 仍保留在 registry 中用于消融。
 
 ## 数据约定
 

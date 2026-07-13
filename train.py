@@ -46,7 +46,9 @@ def main() -> None:
         raise ValueError(f"unsupported optimizer: {optimizer_name}")
     optimizer = optimizer_type(model.parameters(), lr=training["learning_rate"],
                                weight_decay=training.get("weight_decay", 0.0))
-    trainer = ACWMTrainer(model, optimizer, training["loss_weights"], config.get("device", "cpu"),
+    loss_weights = dict(training.get("loss_weights", {}))
+    loss_weights.update(config.get("loss", {}))
+    trainer = ACWMTrainer(model, optimizer, loss_weights, config.get("device", "cpu"),
                           training.get("sigreg"), training.get("amp", False),
                           training.get("gradient_clip_norm"))
     planner = CEMPlanner(**config["planner"])

@@ -33,7 +33,7 @@ class GRUViTAgentEncoder(GRUAgentEncoder):
                  feature_dim: int = 192,
                  model_name: str | None = "vit_tiny_patch16_224.augreg_in21k_ft_in1k",
                  pretrained: bool = True, image_size: int = 224, trainable: bool = True,
-                 patch_size: int = 16):
+                 patch_size: int = 16, projector_hidden_dim: int = 2048):
         super().__init__(image_channels, action_dim, state_dim, feature_dim)
         self.visual = TimmViTBackbone(image_channels, feature_dim, model_name, pretrained, image_size, trainable,
-                                      patch_size)
+                                      patch_size, projector_hidden_dim)

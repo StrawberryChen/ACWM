@@ -46,10 +46,10 @@ class AgentCentricWorldModel(nn.Module):
     def encode(self, history_frames: torch.Tensor, history_actions: torch.Tensor,
                current_frame: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         self._last_history_actions = history_actions
-        if self.predictor_type == "motion_token":
+        if self.predictor_type in {"motion_token", "forward_inverse"}:
             frame_latents = self.encode_frames(history_frames)
             assert frame_latents.shape[1] == self.history_size, (
-                f"motion_token expects history_size={self.history_size}, got {frame_latents.shape[1]}"
+                f"{self.predictor_type} expects history_size={self.history_size}, got {frame_latents.shape[1]}"
             )
             # Return full frame history as the rollout state, plus current z_t.
             return frame_latents, frame_latents[:, -1]
@@ -66,6 +66,16 @@ class AgentCentricWorldModel(nn.Module):
             # next_agent/history: [B, 3, 192] = [z_{t-1}, z_t, z_pred]
             next_agent = torch.cat((agent_state[:, 1:], next_environment[:, None]), dim=1)
             return Prediction(next_agent, next_environment, delta)
+        if self.predictor_type == "forward_inverse":
+            assert self.predictor is not None, "forward_inverse predictor is not configured"
+            assert agent_state.ndim == 3, (
+                f"forward_inverse agent_state must be frame history [B,3,192], got {tuple(agent_state.shape)}"
+            )
+            # next_environment: [B, 192] = z_pred_{t+1}; inverse head is intentionally unused here.
+            next_environment = self.predictor(agent_state, action)
+            # next_agent/history: [B, 3, 192] = [z_{t-1}, z_t, z_pred]
+            next_agent = torch.cat((agent_state[:, 1:], next_environment[:, None]), dim=1)
+            return Prediction(next_agent, next_environment)
         next_agent = self.agent_transition(agent_state, action)
         next_environment = self.environment_transition(environment_state, next_agent)
         return Prediction(next_agent, next_environment)
@@ -86,6 +96,11 @@ class AgentCentricWorldModel(nn.Module):
             predictions.append(prediction)
             agent_state, environment_state = prediction.agent, prediction.environment
         return predictions
+
+    def inverse_action(self, z_current: torch.Tensor, z_next: torch.Tensor) -> torch.Tensor:
+        assert self.predictor_type == "forward_inverse", "inverse_action is only available for forward_inverse"
+        assert self.predictor is not None, "forward_inverse predictor is not configured"
+        return self.predictor.inverse(z_current, z_next)
 
     def _action_window(self, action: torch.Tensor, batch: int,
                        history_actions: torch.Tensor | None) -> torch.Tensor:

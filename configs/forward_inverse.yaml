@@ -9,9 +9,11 @@ data:
   num_workers: 0
 
 model:
-  version: motion_token
+  version: forward_inverse
   latent_dim: 192
   history_size: 3
+  frame_encoder:
+    use_leworld_config: true
   agent_encoder:
     name: vit_tiny_gru
     image_channels: 3
@@ -45,16 +47,19 @@ model:
     agent_dim: 192
     hidden_dim: 384
   predictor:
-    # Switch to "adaln" to use the retained baseline transition path.
-    type: motion_token
+    type: forward_inverse
     action_dim: 2
-    hidden_dim: 192
-    history_size: 3
-    motion_layers: 2
-    transformer_layers: 2
+  forward_predictor:
+    type: temporal_action_fusion
+    num_layers: 2
     num_heads: 3
+    hidden_dim: 384
     dropout: 0.0
-    flow_hidden_dim: 384
+    action_hidden_dim: null
+  inverse_head:
+    enabled: true
+    hidden_dim: 384
+    num_layers: 2
 
 training:
   epochs: 20
@@ -66,19 +71,21 @@ training:
   gradient_clip_norm: 1.0
   rollout_length: 5
   loss_weights:
-    prediction: 1.0
+    forward: 1.0
+    inverse: 0.1
     sigreg: 0.09
-    agent: 1.0
-    environment: 1.0
-    agent_sigreg: 0.09
-    environment_sigreg: 0.09
     goal: 1.0
   sigreg:
     knots: 17
     num_projections: 1024
-  checkpoint: outputs/acwm.pt
-  best_checkpoint: outputs/acwm_best.pt
-  metrics_file: outputs/metrics.jsonl
+  checkpoint: outputs/forward_inverse.pt
+  best_checkpoint: outputs/forward_inverse_best.pt
+  metrics_file: outputs/forward_inverse_metrics.jsonl
+
+loss:
+  forward: 1.0
+  inverse: 0.1
+  sigreg: 0.09
 
 validation:
   prediction_video_interval: 1
@@ -92,7 +99,7 @@ wandb:
   enabled: true
   project: acwm
   entity: null
-  name: null
+  name: forward_inverse
   mode: online
 
 planner:
@@ -109,12 +116,9 @@ environment:
   observation_width: 96
   observation_height: 96
   max_steps: 300
-  # Execute this many actions from each CEM result before replanning.
   replan_interval: 4
   success_threshold: 0.95
   seed: 1000
   video_fps: 20
-  # Optional exact goal RGB image; when null, goal_reset_state is rendered instead.
   goal_image: null
-  # [agent_x, agent_y, block_x, block_y, block_angle] used to render goal latent.
   goal_reset_state: [50.0, 50.0, 256.0, 256.0, 0.785398]

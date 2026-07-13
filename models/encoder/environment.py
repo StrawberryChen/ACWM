@@ -21,10 +21,10 @@ class ViTEnvironmentEncoder(nn.Module):
     def __init__(self, image_channels: int, state_dim: int,
                  model_name: str | None = "vit_tiny_patch16_224.augreg_in21k_ft_in1k",
                  pretrained: bool = True, image_size: int = 224, trainable: bool = True,
-                 patch_size: int = 16):
+                 patch_size: int = 16, projector_hidden_dim: int = 2048):
         super().__init__()
         self.network = TimmViTBackbone(image_channels, state_dim, model_name, pretrained, image_size, trainable,
-                                       patch_size)
+                                       patch_size, projector_hidden_dim)
 
     def forward(self, current_frame: torch.Tensor) -> torch.Tensor:
         return self.network(current_frame)

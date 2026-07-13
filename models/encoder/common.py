@@ -19,6 +19,27 @@ class ImageBackbone(nn.Module):
         return self.network(images)
 
 
+class LeWorldProjector(nn.Module):
+    """Official LeWorld-style projector: Linear -> BatchNorm1d -> GELU -> Linear.
+
+    Input shape:  embeddings [B, D]
+    Output shape: projected  [B, 192]
+    """
+
+    def __init__(self, input_dim: int, output_dim: int = 192, hidden_dim: int = 2048):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, output_dim),
+        )
+
+    def forward(self, embeddings: torch.Tensor) -> torch.Tensor:
+        assert embeddings.ndim == 2, f"projector expects [B,D], got {tuple(embeddings.shape)}"
+        return self.net(embeddings)
+
+
 class TimmViTBackbone(nn.Module):
     """ViT-Tiny with LeWM-style CLS-token embedding.
 
@@ -29,7 +50,8 @@ class TimmViTBackbone(nn.Module):
     def __init__(self, image_channels: int, output_dim: int,
                  model_name: str | None = "vit_tiny_patch16_224.augreg_in21k_ft_in1k",
                  pretrained: bool = True, image_size: int = 224,
-                 trainable: bool = True, patch_size: int = 16):
+                 trainable: bool = True, patch_size: int = 16,
+                 projector_hidden_dim: int = 2048):
         super().__init__()
         try:
             import timm
@@ -52,7 +74,7 @@ class TimmViTBackbone(nn.Module):
                 model_name, pretrained=pretrained, num_classes=0, in_chans=image_channels
             )
         feature_dim = self.backbone.num_features
-        self.projection = nn.Sequential(nn.Linear(feature_dim, output_dim), nn.LayerNorm(output_dim))
+        self.projection = LeWorldProjector(feature_dim, output_dim, projector_hidden_dim)
         self.register_buffer("mean", torch.tensor((0.485, 0.456, 0.406)).view(1, 3, 1, 1), persistent=False)
         self.register_buffer("std", torch.tensor((0.229, 0.224, 0.225)).view(1, 3, 1, 1), persistent=False)
         if not trainable:

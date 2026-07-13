@@ -36,6 +36,35 @@ class ACWMTrainer:
         batch = self._move(batch)
         agent, environment = self.model.encode(batch["history_frames"], batch["history_actions"], batch["current_frame"])
         target_environment = self.model.environment_encoder(batch["next_frame"])
+        if getattr(self.model, "predictor_type", "adaln") == "forward_inverse":
+            assert agent.ndim == 3, f"forward_inverse expects frame latents [B,3,D], got {tuple(agent.shape)}"
+            assert batch["history_actions"].shape[1] == agent.shape[1] - 1, (
+                "history_actions must be [a_{t-2}, a_{t-1}] for frames [t-2,t-1,t]"
+            )
+            # prediction.environment: [B, 192] = z_pred_{t+1}; no true future frame is input to forward branch.
+            prediction = self.model.step(agent, environment, batch["current_action"])
+            forward_loss = self.environment_loss(prediction.environment, target_environment)
+            # Inverse branch uses only true adjacent latents z_t and z_{t+1}.
+            action_pred = self.model.inverse_action(environment, target_environment)
+            inverse_loss = nn.functional.mse_loss(action_pred, batch["current_action"])
+            # SIGReg applies only to real Frame Encoder latents: [z_{t-2}, z_{t-1}, z_t, z_{t+1}].
+            real_latents = torch.cat((agent, target_environment[:, None]), dim=1)
+            sigreg_embeddings = real_latents.transpose(0, 1)
+            sigreg = self.sigreg_loss(sigreg_embeddings)
+            total = (self.weights.get("forward", self.weights.get("prediction", 1.0)) * forward_loss
+                     + self.weights.get("inverse", self.weights.get("inverse_weight", 0.1)) * inverse_loss
+                     + self.weights.get("sigreg", self.weights.get("environment_sigreg", 0.1)) * sigreg)
+            return {
+                "loss": total,
+                "total_loss": total,
+                "forward_loss": forward_loss,
+                "inverse_loss": inverse_loss,
+                "sigreg_loss": sigreg,
+                "latent_mean": real_latents.mean(),
+                "latent_std": real_latents.std(dim=(0, 1)).mean(),
+                "action_mse": inverse_loss,
+            }
+
         if getattr(self.model, "predictor_type", "adaln") == "motion_token":
             # history_actions: [B, 2, A], current_action: [B, A]
             # action_window:    [B, 3, A] = [a_{t-2}, a_{t-1}, a_t]

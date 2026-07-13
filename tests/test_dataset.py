@@ -13,6 +13,8 @@ def test_trajectory_window_alignment():
     assert torch.equal(sample["history_frames"], frames[:3])
     assert torch.equal(sample["history_actions"], actions[:2])
     assert torch.equal(sample["current_action"], actions[2])
+    assert torch.equal(sample["current_frame"], frames[2])
+    assert torch.equal(sample["next_frame"], frames[3])
     assert torch.equal(sample["next_history_frames"], frames[1:4])
     assert torch.equal(sample["next_history_actions"], actions[1:3])
 
