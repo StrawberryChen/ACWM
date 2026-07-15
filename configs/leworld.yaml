@@ -48,7 +48,7 @@ model:
     type: adaln
 
 training:
-  epochs: 20
+  epochs: 100
   mode: one_step
   optimizer: adamw
   learning_rate: 0.00005
@@ -72,7 +72,7 @@ training:
 validation:
   prediction_video_interval: 1
   prediction_video_samples: 32
-  planning_interval: 10
+  planning_interval: 50
   planning_episodes: 100
   planning_videos: 3
   video_dir: outputs/videos

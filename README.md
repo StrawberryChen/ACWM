@@ -71,7 +71,7 @@ v0.1 有意不包含图像重建、检测、scene graph、对象/关系标签或
 3. 将 train/validation loss 写入 W&B 和 `outputs/metrics.jsonl`；
 4. 保存可恢复训练的 latest checkpoint。
 
-每 10 个 epoch（由 `validation.planning_interval` 控制）会在官方
+每 50 个 epoch（由 `validation.planning_interval` 控制）会在官方
 `gym_pusht/PushT-v0` 中闭环规划 100 episodes。Success rate 提升时保存
 `outputs/acwm_best.pt`。验证 GIF 与实际 Push-T 规划 MP4 会同时保存到
 `outputs/videos` 并上传 W&B。
