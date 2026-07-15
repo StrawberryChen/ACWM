@@ -72,14 +72,14 @@ v0.1 有意不包含图像重建、检测、scene graph、对象/关系标签或
 4. 保存可恢复训练的 latest checkpoint。
 
 每 50 个 epoch（由 `validation.planning_interval` 控制）会在官方
-`gym_pusht/PushT-v0` 中闭环规划 100 episodes。Success rate 提升时保存
+`gym_pusht/PushT-v0` 中闭环规划 50 episodes。Success rate 提升时保存
 `outputs/acwm_best.pt`。验证 GIF 与实际 Push-T 规划 MP4 会同时保存到
 `outputs/videos` 并上传 W&B。
 
 Colab 输出区会实时显示 training batch loss、prediction validation 平均 loss，
 以及 planning episode 的累计 success rate；无需等待整个阶段结束才看到状态。
-默认 planning 使用 128 个 CEM candidates、3 次迭代，并从每次规划中执行 4 个
-动作后再重规划，以降低 100-episode validation 的耗时。这些值均可在 YAML 调整。
+默认 planning 对齐 LeWorld Push-T eval：CEM 使用 300 个 candidates、30 次迭代、topk 30，
+规划 horizon 为 5，并每 5 个动作后重规划。这些值均可在 YAML 调整。
 
 ACWM v0.1 没有 pixel decoder，因此 prediction GIF 展示真实连续帧与每一步
 agent/environment latent prediction error；planning MP4 展示 CEM 在环境中的真实执行过程。

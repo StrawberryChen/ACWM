@@ -91,7 +91,7 @@ validation:
   prediction_video_interval: 1
   prediction_video_samples: 32
   planning_interval: 50
-  planning_episodes: 100
+  planning_episodes: 50
   planning_videos: 3
   video_dir: outputs/videos
 
@@ -103,20 +103,20 @@ wandb:
   mode: online
 
 planner:
-  horizon: 10
+  horizon: 5
   action_dim: 2
   action_low: 0.0
   action_high: 512.0
-  population: 128
-  elites: 16
-  iterations: 3
+  population: 300
+  elites: 30
+  iterations: 30
 
 environment:
   env_id: gym_pusht/PushT-v0
   observation_width: 96
   observation_height: 96
-  max_steps: 300
-  replan_interval: 4
+  max_steps: 50
+  replan_interval: 5
   success_threshold: 0.95
   seed: 1000
   video_fps: 20
