@@ -33,6 +33,13 @@ def save_episode(dataset, indices: list[int], path: Path) -> None:
             f"{rows.column_names}"
         )
     states = np.asarray(rows[state_key], dtype=np.float32)
+    if states.ndim != 2 or states.shape[1] < 5:
+        raise ValueError(
+            f"dataset column {state_key!r} has shape {states.shape}; "
+            "LeWorld-aligned Push-T eval requires full 5D simulator state "
+            "[agent_x, agent_y, block_x, block_y, block_angle]. "
+            "Use scripts/prepare_pusht_zarr.py to convert the original Diffusion Policy PushT zarr dataset."
+        )
     if len(frames) < 2:
         raise ValueError(f"episode at {path} has fewer than two frames")
     # LeRobot stores an action on every row; the last has no following frame.
