@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+import glob
 from pathlib import Path
 from typing import Any
 
@@ -27,12 +28,14 @@ def _image_tensor(observation: Any, device: torch.device) -> torch.Tensor:
 class PlanningEvaluator:
     """Closed-loop CEM evaluation in the official gym-pusht environment."""
 
-    def __init__(self, planner, config: dict[str, Any], history_length: int, action_dim: int, device):
+    def __init__(self, planner, config: dict[str, Any], history_length: int, action_dim: int, device,
+                 dataset_paths: list[str] | None = None):
         self.planner = planner
         self.config = config
         self.history_length = history_length
         self.action_dim = action_dim
         self.device = torch.device(device)
+        self.dataset_paths = dataset_paths or []
 
     def _make_env(self):
         try:
@@ -63,7 +66,59 @@ class PlanningEvaluator:
             return _image_tensor(np.asarray(Image.open(self.config["goal_image"]).convert("RGB")), self.device).unsqueeze(0)
         reset_state = self.config.get("goal_reset_state", [256.0, 256.0, 256.0, 256.0, 0.785398])
         goal_observation, _ = env.reset(options={"reset_to_state": reset_state})
+        self._set_goal_pose(env, np.asarray(reset_state, dtype=np.float32))
         return _image_tensor(goal_observation, self.device).unsqueeze(0)
+
+    @staticmethod
+    def _set_goal_pose(env, goal_state: np.ndarray) -> None:
+        """Set Push-T green goal pose from a dataset state.
+
+        gym-pusht stores state as [agent_x, agent_y, block_x, block_y, block_angle],
+        while env.unwrapped.goal_pose is [block_x, block_y, block_angle].
+        """
+        env.unwrapped.goal_pose = np.asarray(goal_state[2:5], dtype=np.float32)
+
+    def _dataset_eval_cases(self, episodes: int) -> list[dict[str, Any]]:
+        """LeWorld-style eval cases sampled from validation episodes.
+
+        Each case starts from a dataset simulator state and uses the same
+        episode's state at +goal_offset_steps as the goal.
+        """
+        paths: list[str] = []
+        for pattern in self.dataset_paths:
+            matches = sorted(glob.glob(str(pattern)))
+            paths.extend(matches if matches else [str(pattern)])
+        if not paths:
+            raise ValueError("LeWorld dataset-goal planning requires validation dataset paths")
+        goal_offset = int(self.config.get("goal_offset_steps", 25))
+        cases: list[dict[str, Any]] = []
+        for path in paths:
+            with np.load(path) as data:
+                if "states" not in data:
+                    raise KeyError(
+                        f"{path} has no 'states'. Re-run scripts/prepare_pusht.py with the latest code "
+                        "so planning eval can reset to dataset start/goal states."
+                    )
+                frames = data["frames"]
+                actions = data["actions"]
+                states = data["states"].astype(np.float32)
+                if len(states) != len(frames) or len(actions) != len(frames) - 1:
+                    raise ValueError(f"{path} has inconsistent frames/actions/states lengths")
+                for current in range(self.history_length - 1, len(frames) - goal_offset):
+                    start = current - self.history_length + 1
+                    cases.append({
+                        "path": path,
+                        "current": current,
+                        "history_frames": frames[start: current + 1],
+                        "history_actions": actions[start:current].astype(np.float32),
+                        "start_state": states[current],
+                        "goal_state": states[current + goal_offset],
+                    })
+        if len(cases) < episodes:
+            raise ValueError(f"requested {episodes} planning episodes, but only {len(cases)} valid dataset starts exist")
+        rng = np.random.default_rng(int(self.config.get("seed", 0)))
+        indices = rng.choice(len(cases), size=episodes, replace=False)
+        return [cases[int(index)] for index in indices]
 
     @torch.no_grad()
     def evaluate(self, model, episodes: int = 100, video_dir: str | Path | None = None,
@@ -73,19 +128,43 @@ class PlanningEvaluator:
         except ImportError as error:
             raise ImportError("planning videos require imageio") from error
         model.eval()
-        goal_env = self._make_env()
-        goal = self._goal_frame(goal_env)
-        goal_env.close()
+        use_dataset_goals = bool(self.config.get("eval_from_dataset", True))
+        dataset_cases = self._dataset_eval_cases(episodes) if use_dataset_goals else None
+        if not use_dataset_goals:
+            goal_env = self._make_env()
+            fixed_goal = self._goal_frame(goal_env)
+            goal_env.close()
+        else:
+            fixed_goal = None
         successes, rewards, video_paths = 0, [], []
         replan_interval = max(1, int(self.config.get("replan_interval", 1)))
         progress = tqdm(range(episodes), desc="Push-T planning", dynamic_ncols=True, leave=True)
         for episode in progress:
             env = self._make_env()
-            observation, _ = env.reset(seed=self.config.get("seed", 0) + episode)
-            current = _image_tensor(observation, self.device)
-            frames = deque([current.clone() for _ in range(self.history_length)], maxlen=self.history_length)
-            actions = deque([torch.zeros(self.action_dim, device=self.device) for _ in range(self.history_length - 1)],
-                            maxlen=max(self.history_length - 1, 1))
+            if dataset_cases is not None:
+                case = dataset_cases[episode]
+                observation, _ = env.reset(options={"reset_to_state": case["start_state"]})
+                self._set_goal_pose(env, case["goal_state"])
+                current = _image_tensor(observation, self.device)
+                frames = deque([_image_tensor(frame, self.device) for frame in case["history_frames"]],
+                               maxlen=self.history_length)
+                frames[-1] = current
+                actions = deque([torch.as_tensor(action, device=self.device).float()
+                                 for action in case["history_actions"]],
+                                maxlen=max(self.history_length - 1, 1))
+                goal_observation, _ = env.reset(options={"reset_to_state": case["goal_state"]})
+                self._set_goal_pose(env, case["goal_state"])
+                goal = _image_tensor(goal_observation, self.device).unsqueeze(0)
+                observation, _ = env.reset(options={"reset_to_state": case["start_state"]})
+                self._set_goal_pose(env, case["goal_state"])
+                current = _image_tensor(observation, self.device)
+            else:
+                observation, _ = env.reset(seed=self.config.get("seed", 0) + episode)
+                current = _image_tensor(observation, self.device)
+                frames = deque([current.clone() for _ in range(self.history_length)], maxlen=self.history_length)
+                actions = deque([torch.zeros(self.action_dim, device=self.device) for _ in range(self.history_length - 1)],
+                                maxlen=max(self.history_length - 1, 1))
+                goal = fixed_goal
             video = [env.render()] if episode < videos_to_save else []
             episode_reward, succeeded = 0.0, False
             action_queue: deque[torch.Tensor] = deque()

@@ -25,11 +25,26 @@ def save_episode(dataset, indices: list[int], path: Path) -> None:
     rows = dataset.select(indices).sort("frame_index")
     frames = np.stack([np.asarray(image.convert("RGB"), dtype=np.uint8) for image in rows["observation.image"]])
     all_actions = np.asarray(rows["action"], dtype=np.float32)
+    state_key = _state_key(rows.column_names)
+    if state_key is None:
+        raise KeyError(
+            "LeWorld-aligned planning evaluation requires simulator states, but this dataset has no "
+            "'observation.state' or 'state' column. Available columns: "
+            f"{rows.column_names}"
+        )
+    states = np.asarray(rows[state_key], dtype=np.float32)
     if len(frames) < 2:
         raise ValueError(f"episode at {path} has fewer than two frames")
     # LeRobot stores an action on every row; the last has no following frame.
     actions = all_actions[:-1]
-    np.savez_compressed(path, frames=frames, actions=actions)
+    np.savez_compressed(path, frames=frames, actions=actions, states=states)
+
+
+def _state_key(column_names: list[str]) -> str | None:
+    for key in ("observation.state", "state"):
+        if key in column_names:
+            return key
+    return None
 
 
 def write_colab_config(args: argparse.Namespace, root: Path) -> None:

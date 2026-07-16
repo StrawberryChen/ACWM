@@ -15,6 +15,7 @@ from torch.utils.data import Dataset
 class Trajectory:
     frames: torch.Tensor  # [T, C, H, W], float in [0, 1]
     actions: torch.Tensor  # [T-1, A]
+    states: torch.Tensor | None = None  # [T, state_dim], optional simulator states for LeWorld eval
 
 
 def _to_frames(value: np.ndarray | torch.Tensor) -> torch.Tensor:
@@ -49,6 +50,8 @@ class TrajectoryDataset(Dataset):
         for trajectory_id, trajectory in enumerate(self.trajectories):
             if len(trajectory.actions) != len(trajectory.frames) - 1:
                 raise ValueError("actions must describe every frame-to-frame transition")
+            if trajectory.states is not None and len(trajectory.states) != len(trajectory.frames):
+                raise ValueError("states must describe every frame when provided")
             for current in range(history_length - 1, len(trajectory.frames) - rollout_length):
                 self.indices.append((trajectory_id, current))
 
@@ -63,7 +66,10 @@ class TrajectoryDataset(Dataset):
             expanded_paths.extend(matches if matches else [path])
         for path in expanded_paths:
             with np.load(path) as data:
-                trajectories.append(Trajectory(_to_frames(data["frames"]), torch.as_tensor(data["actions"]).float()))
+                states = torch.as_tensor(data["states"]).float() if "states" in data else None
+                trajectories.append(Trajectory(_to_frames(data["frames"]),
+                                               torch.as_tensor(data["actions"]).float(),
+                                               states))
         return cls(trajectories, history_length, rollout_length)
 
     def __len__(self) -> int:
@@ -82,9 +88,14 @@ class TrajectoryDataset(Dataset):
             "next_history_frames": trajectory.frames[start + 1 : current + 2],
             "next_history_actions": trajectory.actions[start + 1 : current + 1],
         }
+        if trajectory.states is not None:
+            sample["current_state"] = trajectory.states[current]
+            sample["next_state"] = trajectory.states[current + 1]
         if self.rollout_length > 1:
             sample["rollout_actions"] = trajectory.actions[current : current + self.rollout_length]
             sample["goal_frame"] = trajectory.frames[current + self.rollout_length]
+            if trajectory.states is not None:
+                sample["goal_state"] = trajectory.states[current + self.rollout_length]
         return sample
 
 

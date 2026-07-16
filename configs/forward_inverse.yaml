@@ -113,6 +113,8 @@ planner:
 
 environment:
   env_id: gym_pusht/PushT-v0
+  eval_from_dataset: true
+  goal_offset_steps: 25
   observation_width: 96
   observation_height: 96
   max_steps: 50

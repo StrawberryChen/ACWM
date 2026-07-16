@@ -53,7 +53,8 @@ def main() -> None:
                           training.get("gradient_clip_norm"))
     planner = CEMPlanner(**config["planner"])
     planning_evaluator = PlanningEvaluator(planner, config["environment"], data_config["history_length"],
-                                           config["planner"]["action_dim"], config.get("device", "cpu"))
+                                           config["planner"]["action_dim"], config.get("device", "cpu"),
+                                           dataset_paths=val_paths)
     logger = ExperimentLogger(config.get("wandb", {"enabled": False}), config)
     validation = config["validation"]
     best_success_rate = -1.0

@@ -7,7 +7,8 @@ from dataset.trajectory import Trajectory, TrajectoryDataset
 def test_trajectory_window_alignment():
     frames = torch.arange(6 * 3 * 8 * 8).reshape(6, 3, 8, 8).float()
     actions = torch.arange(10).reshape(5, 2).float()
-    dataset = TrajectoryDataset([Trajectory(frames, actions)], history_length=3)
+    states = torch.arange(6 * 5).reshape(6, 5).float()
+    dataset = TrajectoryDataset([Trajectory(frames, actions, states)], history_length=3)
     sample = dataset[0]
     assert len(dataset) == 3
     assert torch.equal(sample["history_frames"], frames[:3])
@@ -15,6 +16,8 @@ def test_trajectory_window_alignment():
     assert torch.equal(sample["current_action"], actions[2])
     assert torch.equal(sample["current_frame"], frames[2])
     assert torch.equal(sample["next_frame"], frames[3])
+    assert torch.equal(sample["current_state"], states[2])
+    assert torch.equal(sample["next_state"], states[3])
     assert torch.equal(sample["next_history_frames"], frames[1:4])
     assert torch.equal(sample["next_history_actions"], actions[1:3])
 
