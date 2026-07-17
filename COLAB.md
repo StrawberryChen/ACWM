@@ -45,7 +45,7 @@ projector；不会下载预训练 ViT 权重。旧 checkpoint 与新结构不兼
 
 - 每 epoch 的 train / validation loss；
 - prediction validation GIF；
-- 每 50 epoch 的 50-episode planning success rate；
+- 每 10 epoch 的 50-episode planning success rate；
 - Push-T 闭环规划 MP4。
 
 `outputs/acwm.pt` 是每个 epoch 更新的 latest checkpoint；

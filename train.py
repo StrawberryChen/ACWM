@@ -69,7 +69,7 @@ def main() -> None:
             save_prediction_animation(trainer, val_loader, prediction_path,
                                       validation.get("prediction_video_samples", 32))
             metrics["validation/prediction_animation"] = logger.video(prediction_path, fps=4)
-        if epoch % validation.get("planning_interval", 50) == 0:
+        if epoch % validation.get("planning_interval", 10) == 0:
             print(f"Running {validation.get('planning_episodes', 50)} Push-T planning episodes...")
             result = planning_evaluator.evaluate(
                 model,

@@ -72,7 +72,7 @@ training:
 validation:
   prediction_video_interval: 1
   prediction_video_samples: 32
-  planning_interval: 50
+  planning_interval: 10
   planning_episodes: 50
   planning_videos: 3
   video_dir: outputs/videos
