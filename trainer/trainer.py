@@ -7,7 +7,7 @@ import torch
 from torch import nn
 from tqdm.auto import tqdm
 
-from losses import AgentPredictionLoss, EnvironmentPredictionLoss, GoalConsistencyLoss, SIGRegLoss
+from losses import AgentPredictionLoss, EnvironmentPredictionLoss, GoalConsistencyLoss, MomentSIGRegLoss, SIGRegLoss
 
 
 class ACWMTrainer:
@@ -16,7 +16,7 @@ class ACWMTrainer:
     def __init__(self, model: nn.Module, optimizer: torch.optim.Optimizer,
                  loss_weights: dict[str, float], device: str | torch.device = "cpu",
                  sigreg_config: dict | None = None, amp: bool = False,
-                 gradient_clip_norm: float | None = None):
+                 gradient_clip_norm: float | None = None, scheduler=None):
         self.model = model.to(device)
         self.optimizer = optimizer
         self.device = torch.device(device)
@@ -25,8 +25,11 @@ class ACWMTrainer:
         self.environment_loss = EnvironmentPredictionLoss()
         self.goal_loss = GoalConsistencyLoss()
         self.sigreg_loss = SIGRegLoss(**(sigreg_config or {})).to(device)
+        self.moment_sigreg_loss = MomentSIGRegLoss().to(device)
         self.amp_enabled = bool(amp and self.device.type == "cuda")
         self.gradient_clip_norm = gradient_clip_norm
+        self.scheduler = scheduler
+        self.global_step = 0
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.amp_enabled)
 
     def _move(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
@@ -34,6 +37,51 @@ class ACWMTrainer:
 
     def compute_one_step(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         batch = self._move(batch)
+        if getattr(self.model, "predictor_type", "adaln") == "v3_n1":
+            # o_t: [B,3,H,W], a_t raw: [B,2], o_next: [B,3,H,W]
+            current = self.model.predictor.encode_gaussian(batch["current_frame"])
+            target = self.model.predictor.encode_gaussian(batch["next_frame"])
+            # mu_pred_next: [B,192]
+            prediction = self.model.step(current.mu, current.mu, batch["current_action"])
+            pred_loss = self.environment_loss(prediction.environment, target.mu)
+            kl_current = self.model.predictor.kl_loss(current)
+            kl_next = self.model.predictor.kl_loss(target)
+            kl_loss = 0.5 * (kl_current + kl_next)
+            # sig_input: [2B,192]
+            sig_input = torch.cat((current.mu, target.mu), dim=0)
+            sig_loss, sig_metrics = self.moment_sigreg_loss(sig_input)
+            total = (self.weights.get("prediction", 1.0) * pred_loss
+                     + self.weights.get("beta_kl", self.weights.get("kl", 1e-4)) * kl_loss
+                     + self.weights.get("lambda_sig", self.weights.get("sigreg", 0.05)) * sig_loss)
+            permutation = torch.randperm(batch["current_action"].shape[0], device=self.device)
+            shuffled = self.model.step(current.mu, current.mu, batch["current_action"][permutation]).environment
+            shuffle_mse = self.environment_loss(shuffled, target.mu)
+            normal_mse = pred_loss
+            metrics = {
+                "loss": total,
+                "loss_total": total,
+                "loss_pred": pred_loss,
+                "loss_kl": kl_loss,
+                "loss_kl_current": kl_current,
+                "loss_kl_next": kl_next,
+                "loss_sig_total": sig_loss,
+                "mu_current_mean_abs": current.mu.abs().mean(),
+                "mu_next_mean_abs": target.mu.abs().mean(),
+                "mu_current_std_mean": current.mu.std(dim=0).mean(),
+                "mu_next_std_mean": target.mu.std(dim=0).mean(),
+                "mu_combined_std_mean": sig_input.std(dim=0).mean(),
+                "mu_pred_std_mean": prediction.environment.std(dim=0).mean(),
+                "logvar_current_mean": current.logvar.mean(),
+                "logvar_next_mean": target.logvar.mean(),
+                "variance_current_mean": current.logvar.exp().mean(),
+                "variance_next_mean": target.logvar.exp().mean(),
+                "action_shuffle_mse_normal": normal_mse,
+                "action_shuffle_mse_shuffle": shuffle_mse,
+                "action_sensitivity": shuffle_mse - normal_mse,
+            }
+            metrics.update(sig_metrics)
+            return metrics
+
         agent, environment = self.model.encode(batch["history_frames"], batch["history_actions"], batch["current_frame"])
         target_environment = self.model.environment_encoder(batch["next_frame"])
         if getattr(self.model, "predictor_type", "adaln") == "forward_inverse":
@@ -126,12 +174,20 @@ class ACWMTrainer:
         with torch.autocast(device_type=self.device.type, dtype=torch.float16, enabled=self.amp_enabled):
             losses = self.compute_one_step(batch) if mode == "one_step" else self.compute_rollout(batch)
         self.scaler.scale(losses["loss"]).backward()
+        grad_norm = torch.tensor(0.0, device=self.device)
         if self.gradient_clip_norm is not None:
             self.scaler.unscale_(self.optimizer)
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip_norm)
+            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip_norm)
         self.scaler.step(self.optimizer)
         self.scaler.update()
-        return {key: value.detach().item() for key, value in losses.items()}
+        if self.scheduler is not None:
+            self.scheduler.step()
+        self.global_step += 1
+        output = {key: value.detach().item() for key, value in losses.items()}
+        output["gradient_norm"] = float(grad_norm.detach().item() if torch.is_tensor(grad_norm) else grad_norm)
+        output["learning_rate"] = float(self.optimizer.param_groups[0]["lr"])
+        output["global_step"] = float(self.global_step)
+        return output
 
     def fit_epoch(self, loader: Iterable[dict[str, torch.Tensor]], mode: str = "one_step",
                   description: str = "Training") -> dict[str, float]:

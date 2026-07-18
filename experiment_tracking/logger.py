@@ -25,7 +25,13 @@ class ExperimentLogger:
             self.run.log(values, step=step)
 
     def video(self, path: str | Path, fps: int = 20):
-        return self.wandb.Video(str(path), fps=fps, format=Path(path).suffix.lstrip(".")) if self.run else str(path)
+        if self.run is None:
+            return str(path)
+        try:
+            return self.wandb.Video(str(path), fps=fps, format=Path(path).suffix.lstrip("."))
+        except Exception as error:
+            print(f"Warning: failed to prepare W&B video {path}: {error}")
+            return str(path)
 
     def finish(self) -> None:
         if self.run is not None:
@@ -37,4 +43,3 @@ def append_metrics(path: str | Path, epoch: int, metrics: dict[str, float]) -> N
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps({"epoch": epoch, **metrics}) + "\n")
-

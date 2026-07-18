@@ -26,9 +26,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-root", default="/content/drive/MyDrive/ACWM")
     parser.add_argument("--val-fraction", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--base-config", default="configs/forward_inverse.yaml")
-    parser.add_argument("--config-output", default="configs/colab_forward_inverse.yaml")
+    parser.add_argument("--base-config", default="configs/acwm_v3_n1.yaml")
+    parser.add_argument("--config-output", default="configs/colab_acwm_v3_n1.yaml")
     parser.add_argument("--download-dir", default="/content/ACWM/data_src")
+    parser.add_argument("--frame-skip", type=int, default=5)
     return parser.parse_args()
 
 
@@ -73,7 +74,7 @@ def array_from_group(group, names: tuple[str, ...]) -> np.ndarray:
     raise KeyError(f"none of {names} found; available keys: {list(group.keys())}")
 
 
-def save_episodes(zarr_path: Path, root: Path, val_fraction: float, seed: int) -> None:
+def save_episodes(zarr_path: Path, root: Path, val_fraction: float, seed: int, frame_skip: int) -> None:
     try:
         import zarr
     except ImportError as error:
@@ -111,12 +112,16 @@ def save_episodes(zarr_path: Path, root: Path, val_fraction: float, seed: int) -
     start = 0
     for episode, end in enumerate(episode_ends):
         out_dir = val_dir if episode in val_episodes else train_dir
+        indices = np.arange(start, int(end), frame_skip)
+        if len(indices) < 2:
+            start = int(end)
+            continue
         # LeRobot/DiffusionPolicy stores one action per frame; the final action has no next frame.
         np.savez_compressed(
             out_dir / f"episode_{episode:06d}.npz",
-            frames=frames[start:end],
-            actions=actions[start:end - 1],
-            states=states[start:end, :5],
+            frames=frames[indices],
+            actions=actions[indices[:-1]],
+            states=states[indices, :5],
         )
         start = int(end)
     print(f"Converted {len(episode_ends)} episodes from {zarr_path}")
@@ -129,7 +134,7 @@ def main() -> None:
         raise ValueError("val-fraction must be between 0 and 1")
     root = Path(args.output_root)
     zarr_path = ensure_zarr(args)
-    save_episodes(zarr_path, root, args.val_fraction, args.seed)
+    save_episodes(zarr_path, root, args.val_fraction, args.seed, args.frame_skip)
     write_colab_config(args, root)
     print(f"Ready. Train with: python train.py --config {args.config_output}")
 

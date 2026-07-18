@@ -17,10 +17,27 @@ def validate_prediction(trainer, loader: Iterable[dict[str, torch.Tensor]]) -> d
         count += 1
         for key, value in trainer.compute_one_step(batch).items():
             totals[key] += value.item()
+        if getattr(trainer.model, "predictor_type", "adaln") == "v3_n1" and "rollout_actions" in batch:
+            rollout_metrics = _v3_rollout_metrics(trainer, batch)
+            for key, value in rollout_metrics.items():
+                totals[key] += value.item()
         progress.set_postfix(loss=f"{totals['loss'] / count:.5f}")
     if count == 0:
         raise ValueError("validation loader is empty")
     return {key: value / count for key, value in totals.items()}
+
+
+def _v3_rollout_metrics(trainer, raw_batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    batch = trainer._move(raw_batch)
+    current = trainer.model.predictor.encode_gaussian(batch["current_frame"]).mu
+    mu = current
+    metrics = {}
+    for step_index, action in enumerate(batch["rollout_actions"].unbind(dim=1), start=1):
+        mu = trainer.model.step(mu, mu, action).environment
+        if step_index in {1, 2, 3, 5}:
+            target = trainer.model.predictor.encode_gaussian(batch["rollout_frames"][:, step_index - 1]).mu
+            metrics[f"rollout_mse_step_{step_index}"] = (mu - target).square().mean()
+    return metrics
 
 
 @torch.no_grad()
@@ -38,8 +55,8 @@ def save_prediction_animation(trainer, loader, path: str | Path, max_samples: in
         batch = trainer._move(raw_batch)
         agent, environment = trainer.model.encode(batch["history_frames"], batch["history_actions"], batch["current_frame"])
         prediction = trainer.model.step(agent, environment, batch["current_action"])
-        target_environment = trainer.model.environment_encoder(batch["next_frame"])
-        if getattr(trainer.model, "predictor_type", "adaln") in {"motion_token", "forward_inverse"}:
+        target_environment = trainer.model.encode_goal(batch["next_frame"]) if hasattr(trainer.model, "encode_goal") else trainer.model.environment_encoder(batch["next_frame"])
+        if getattr(trainer.model, "predictor_type", "adaln") in {"motion_token", "forward_inverse", "v3_n1"}:
             agent_error = None
         else:
             target_agent = trainer.model.agent_encoder(batch["next_history_frames"], batch["next_history_actions"])

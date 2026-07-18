@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 import glob
+import time
 from pathlib import Path
 from typing import Any
 
@@ -136,7 +137,7 @@ class PlanningEvaluator:
             goal_env.close()
         else:
             fixed_goal = None
-        successes, rewards, video_paths = 0, [], []
+        successes, rewards, final_rewards, episode_lengths, planning_times, video_paths = 0, [], [], [], [], []
         replan_interval = max(1, int(self.config.get("replan_interval", 1)))
         progress = tqdm(range(episodes), desc="Push-T planning", dynamic_ncols=True, leave=True)
         for episode in progress:
@@ -173,10 +174,13 @@ class PlanningEvaluator:
                     history_frames = torch.stack(tuple(frames)).unsqueeze(0)
                     history_actions = (torch.stack(tuple(actions)).unsqueeze(0) if self.history_length > 1
                                        else torch.empty(1, 0, self.action_dim, device=self.device))
+                    start_plan = time.perf_counter()
                     planned = self.planner.plan(model, history_frames, history_actions, current.unsqueeze(0), goal)
+                    planning_times.append(time.perf_counter() - start_plan)
                     action_queue.extend(planned[0, :replan_interval].unbind(0))
                 action = action_queue.popleft()
-                observation, reward, terminated, truncated, info = env.step(action.cpu().numpy())
+                env_action = model.denormalize_planner_action(action[None])[0] if hasattr(model, "denormalize_planner_action") else action
+                observation, reward, terminated, truncated, info = env.step(env_action.cpu().numpy())
                 episode_reward = max(episode_reward, float(reward))
                 current = _image_tensor(observation, self.device)
                 frames.append(current)
@@ -192,6 +196,8 @@ class PlanningEvaluator:
                     break
             successes += int(succeeded)
             rewards.append(episode_reward)
+            final_rewards.append(float(reward))
+            episode_lengths.append(step + 1)
             progress.set_postfix(successes=f"{successes}/{episode + 1}",
                                  success_rate=f"{successes / (episode + 1):.1%}")
             if video:
@@ -203,5 +209,9 @@ class PlanningEvaluator:
         return {
             "success_rate": successes / episodes,
             "mean_max_reward": float(np.mean(rewards)),
+            "mean_max_overlap": float(np.mean(rewards)),
+            "mean_final_overlap": float(np.mean(final_rewards)),
+            "mean_episode_length": float(np.mean(episode_lengths)),
+            "mean_planning_time": float(np.mean(planning_times)) if planning_times else 0.0,
             "videos": video_paths,
         }

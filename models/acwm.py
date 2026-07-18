@@ -46,6 +46,11 @@ class AgentCentricWorldModel(nn.Module):
     def encode(self, history_frames: torch.Tensor, history_actions: torch.Tensor,
                current_frame: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         self._last_history_actions = history_actions
+        if self.predictor_type == "v3_n1":
+            assert self.predictor is not None, "v3_n1 predictor is not configured"
+            # mu_current: [B,192]
+            mu_current = self.predictor.encode_mean(current_frame)
+            return mu_current, mu_current
         if self.predictor_type in {"motion_token", "forward_inverse"}:
             frame_latents = self.encode_frames(history_frames)
             assert frame_latents.shape[1] == self.history_size, (
@@ -56,7 +61,13 @@ class AgentCentricWorldModel(nn.Module):
         return self.agent_encoder(history_frames, history_actions), self.environment_encoder(current_frame)
 
     def step(self, agent_state: torch.Tensor, environment_state: torch.Tensor,
-             action: torch.Tensor, history_actions: torch.Tensor | None = None) -> Prediction:
+             action: torch.Tensor, history_actions: torch.Tensor | None = None,
+             action_is_normalized: bool = False) -> Prediction:
+        if self.predictor_type == "v3_n1":
+            assert self.predictor is not None, "v3_n1 predictor is not configured"
+            # next_environment: [B,192] = mu_pred_next.
+            next_environment = self.predictor.predict_next(environment_state, action, action_is_normalized)
+            return Prediction(next_environment, next_environment)
         if self.predictor_type == "motion_token":
             assert self.predictor is not None, "motion_token predictor is not configured"
             assert agent_state.ndim == 3, f"motion_token agent_state must be frame history [B,3,192], got {tuple(agent_state.shape)}"
@@ -92,7 +103,8 @@ class AgentCentricWorldModel(nn.Module):
                 # history_actions: [B, 2, A] = [a_{prev1}, a_current]
                 history_actions = torch.cat((history_actions[:, 1:], action[:, None]), dim=1)
             else:
-                prediction = self.step(agent_state, environment_state, action)
+                prediction = self.step(agent_state, environment_state, action,
+                                       action_is_normalized=(self.predictor_type == "v3_n1"))
             predictions.append(prediction)
             agent_state, environment_state = prediction.agent, prediction.environment
         return predictions
@@ -101,6 +113,23 @@ class AgentCentricWorldModel(nn.Module):
         assert self.predictor_type == "forward_inverse", "inverse_action is only available for forward_inverse"
         assert self.predictor is not None, "forward_inverse predictor is not configured"
         return self.predictor.inverse(z_current, z_next)
+
+    def encode_goal(self, goal_frame: torch.Tensor) -> torch.Tensor:
+        if self.predictor_type == "v3_n1":
+            assert self.predictor is not None
+            return self.predictor.encode_mean(goal_frame)
+        return self.environment_encoder(goal_frame)
+
+    def denormalize_planner_action(self, action: torch.Tensor) -> torch.Tensor:
+        if self.predictor_type == "v3_n1":
+            assert self.predictor is not None
+            return self.predictor.denormalize_action(action)
+        return action
+
+    def set_action_stats(self, action_min: torch.Tensor, action_max: torch.Tensor) -> None:
+        if self.predictor_type == "v3_n1":
+            assert self.predictor is not None
+            self.predictor.set_action_stats(action_min, action_max)
 
     def _action_window(self, action: torch.Tensor, batch: int,
                        history_actions: torch.Tensor | None) -> torch.Tensor:

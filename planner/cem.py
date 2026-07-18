@@ -18,7 +18,7 @@ class CEMPlanner:
              current_frame: torch.Tensor, goal_frame: torch.Tensor) -> torch.Tensor:
         """Returns [B,H,A]; batching lets each input state get its own search."""
         agent, environment = model.encode(history_frames, history_actions, current_frame)
-        goal = model.environment_encoder(goal_frame)
+        goal = model.encode_goal(goal_frame) if hasattr(model, "encode_goal") else model.environment_encoder(goal_frame)
         batch, device = agent.shape[0], agent.device
         low = torch.as_tensor(self.action_low, device=device).expand(self.action_dim)
         high = torch.as_tensor(self.action_high, device=device).expand(self.action_dim)

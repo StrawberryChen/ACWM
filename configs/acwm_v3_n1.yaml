@@ -1,0 +1,114 @@
+seed: 42
+device: cpu
+
+data:
+  train_paths: []
+  val_paths: []
+  history_length: 1
+  batch_size: 256
+  num_workers: 2
+
+model:
+  version: v3_n1
+  model_name: ACWM v3-N1
+  latent_dim: 192
+  history_window: 1
+  image_size: 224
+  patch_size: 14
+  vit_depth: 12
+  vit_heads: 3
+  mlp_ratio: 4.0
+  image_channels: 3
+  logvar_min: -10.0
+  logvar_max: 10.0
+  predictor:
+    type: v3_n1
+    action_dim: 2
+  # Retained only to satisfy the shared factory signature; v3_n1 does not use these modules.
+  agent_encoder:
+    name: gru
+    image_channels: 3
+    action_dim: 2
+    state_dim: 192
+    feature_dim: 192
+  environment_encoder:
+    name: cnn
+    image_channels: 3
+    state_dim: 192
+  agent_transition:
+    name: mlp
+    agent_dim: 192
+    action_dim: 2
+    hidden_dim: 384
+  environment_transition:
+    name: mlp
+    environment_dim: 192
+    agent_dim: 192
+    hidden_dim: 384
+
+training:
+  epochs: 100
+  mode: one_step
+  optimizer: adamw
+  learning_rate: 0.0003
+  min_learning_rate: 0.000001
+  weight_decay: 0.05
+  betas: [0.9, 0.95]
+  scheduler: cosine
+  warmup_epochs: 5
+  amp: true
+  gradient_clip_norm: 1.0
+  rollout_length: 5
+  loss_weights:
+    prediction: 1.0
+    beta_kl: 0.0001
+    lambda_sig: 0.05
+    goal: 1.0
+  checkpoint: outputs/acwm_v3_n1/last.pt
+  best_checkpoint: outputs/acwm_v3_n1/best_planning_success.pt
+  best_val_pred_checkpoint: outputs/acwm_v3_n1/best_val_pred.pt
+  best_rollout_step5_checkpoint: outputs/acwm_v3_n1/best_rollout_step5.pt
+  metrics_file: outputs/acwm_v3_n1/metrics.jsonl
+
+loss:
+  prediction: 1.0
+  beta_kl: 0.0001
+  lambda_sig: 0.05
+
+validation:
+  prediction_video_interval: 1
+  prediction_video_samples: 32
+  planning_interval: 10
+  planning_episodes: 50
+  planning_videos: 50
+  video_dir: outputs/videos/acwm_v3_n1
+
+wandb:
+  enabled: true
+  project: acwm
+  entity: null
+  name: acwm_v3_n1_seed_42
+  mode: online
+
+planner:
+  horizon: 5
+  action_dim: 2
+  action_low: -1.0
+  action_high: 1.0
+  population: 300
+  elites: 30
+  iterations: 30
+
+environment:
+  env_id: gym_pusht/PushT-v0
+  eval_from_dataset: true
+  goal_offset_steps: 25
+  observation_width: 224
+  observation_height: 224
+  max_steps: 50
+  replan_interval: 1
+  success_threshold: 0.95
+  seed: 1000
+  video_fps: 20
+  goal_image: null
+  goal_reset_state: [50.0, 50.0, 256.0, 256.0, 0.785398]

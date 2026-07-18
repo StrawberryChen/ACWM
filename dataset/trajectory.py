@@ -93,6 +93,7 @@ class TrajectoryDataset(Dataset):
             sample["next_state"] = trajectory.states[current + 1]
         if self.rollout_length > 1:
             sample["rollout_actions"] = trajectory.actions[current : current + self.rollout_length]
+            sample["rollout_frames"] = trajectory.frames[current + 1 : current + self.rollout_length + 1]
             sample["goal_frame"] = trajectory.frames[current + self.rollout_length]
             if trajectory.states is not None:
                 sample["goal_state"] = trajectory.states[current + self.rollout_length]
