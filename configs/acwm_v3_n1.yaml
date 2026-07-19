@@ -24,6 +24,8 @@ model:
   predictor:
     type: v3_n1
     action_dim: 2
+  action_consistency_head:
+    hidden_dim: 384
   # Retained only to satisfy the shared factory signature; v3_n1 does not use these modules.
   agent_encoder:
     name: gru
@@ -62,7 +64,8 @@ training:
   loss_weights:
     prediction: 1.0
     beta_kl: 0.0001
-    lambda_sig: 0.05
+    lambda_sig: 1.0
+    lambda_action_consistency: 1.0
     goal: 1.0
   checkpoint: outputs/acwm_v3_n1/last.pt
   best_checkpoint: outputs/acwm_v3_n1/best_planning_success.pt
@@ -73,7 +76,8 @@ training:
 loss:
   prediction: 1.0
   beta_kl: 0.0001
-  lambda_sig: 0.05
+  lambda_sig: 1.0
+  lambda_action_consistency: 1.0
 
 validation:
   prediction_video_interval: 1

@@ -25,13 +25,44 @@ class V3N1Projection(nn.Module):
         return self.net(cls_token)
 
 
+class ActionConsistencyHead(nn.Module):
+    """Predict the normalized action label from predicted latent displacement.
+
+    Input shape:  delta_pred [B, 192]
+    Output shape: action_hat [B, action_dim]
+    """
+
+    def __init__(self, latent_dim: int = 192, action_dim: int = 2, hidden_dim: int = 384):
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.action_dim = action_dim
+        self.net = nn.Sequential(
+            nn.Linear(latent_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, action_dim),
+        )
+
+    def forward(self, delta_pred: torch.Tensor) -> torch.Tensor:
+        assert delta_pred.ndim == 2, f"delta_pred must be [B,{self.latent_dim}], got {tuple(delta_pred.shape)}"
+        assert delta_pred.shape[-1] == self.latent_dim, (
+            f"delta_pred latent dim must be {self.latent_dim}, got {delta_pred.shape[-1]}"
+        )
+        # action_hat: [B, action_dim]
+        return self.net(delta_pred)
+
+
 class V3N1GaussianWorldModel(nn.Module):
     """ACWM v3-N1: one-frame action-conditioned Gaussian-mean world model."""
 
     def __init__(self, image_channels: int = 3, latent_dim: int = 192, action_dim: int = 2,
                  image_size: int = 224, patch_size: int = 14, vit_depth: int = 12,
                  vit_heads: int = 3, mlp_ratio: float = 4.0,
-                 logvar_min: float = -10.0, logvar_max: float = 10.0):
+                 logvar_min: float = -10.0, logvar_max: float = 10.0,
+                 action_consistency_hidden_dim: int = 384):
         super().__init__()
         try:
             from timm.models.vision_transformer import VisionTransformer
@@ -68,6 +99,11 @@ class V3N1GaussianWorldModel(nn.Module):
             nn.LayerNorm(512),
             nn.GELU(),
             nn.Linear(512, latent_dim),
+        )
+        self.action_consistency_head = ActionConsistencyHead(
+            latent_dim=latent_dim,
+            action_dim=action_dim,
+            hidden_dim=action_consistency_hidden_dim,
         )
         self.register_buffer("image_mean", torch.tensor((0.485, 0.456, 0.406)).view(1, 3, 1, 1), persistent=False)
         self.register_buffer("image_std", torch.tensor((0.229, 0.224, 0.225)).view(1, 3, 1, 1), persistent=False)
@@ -120,6 +156,14 @@ class V3N1GaussianWorldModel(nn.Module):
         predictor_input = torch.cat((mu_current, e_action), dim=-1)
         # mu_pred_next: [B,192]
         return self.dynamics_predictor(predictor_input)
+
+    def predict_action_from_delta(self, delta_pred: torch.Tensor) -> torch.Tensor:
+        assert delta_pred.ndim == 2, f"delta_pred must be [B,{self.latent_dim}], got {tuple(delta_pred.shape)}"
+        assert delta_pred.shape[-1] == self.latent_dim, (
+            f"delta_pred latent dim must be {self.latent_dim}, got {delta_pred.shape[-1]}"
+        )
+        # action_hat: [B, action_dim], target is normalized real action in [-1, 1].
+        return self.action_consistency_head(delta_pred)
 
     @staticmethod
     def kl_loss(latent: GaussianLatent) -> torch.Tensor:

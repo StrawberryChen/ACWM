@@ -44,6 +44,16 @@ class ACWMTrainer:
             # mu_pred_next: [B,192]
             prediction = self.model.step(current.mu, current.mu, batch["current_action"])
             pred_loss = self.environment_loss(prediction.environment, target.mu)
+            # delta_pred: [B,192] = predicted latent displacement from the forward predictor.
+            delta_pred = prediction.environment - current.mu
+            # action_hat: [B,action_dim], target_action: [B,action_dim] in [-1,1].
+            action_hat = self.model.predictor.predict_action_from_delta(delta_pred)
+            target_action = self.model.predictor.normalize_action(batch["current_action"]).detach()
+            assert target_action.ndim == 2, f"target_action must be [B,A], got {tuple(target_action.shape)}"
+            assert target_action.shape == action_hat.shape, (
+                f"action_hat shape {tuple(action_hat.shape)} must match target_action {tuple(target_action.shape)}"
+            )
+            action_consistency_loss = nn.functional.mse_loss(action_hat, target_action)
             kl_current = self.model.predictor.kl_loss(current)
             kl_next = self.model.predictor.kl_loss(target)
             kl_loss = 0.5 * (kl_current + kl_next)
@@ -52,7 +62,8 @@ class ACWMTrainer:
             sig_loss, sig_metrics = self.moment_sigreg_loss(sig_input)
             total = (self.weights.get("prediction", 1.0) * pred_loss
                      + self.weights.get("beta_kl", self.weights.get("kl", 1e-4)) * kl_loss
-                     + self.weights.get("lambda_sig", self.weights.get("sigreg", 0.05)) * sig_loss)
+                     + self.weights.get("lambda_sig", self.weights.get("sigreg", 0.05)) * sig_loss
+                     + self.weights.get("lambda_action_consistency", 1.0) * action_consistency_loss)
             permutation = torch.randperm(batch["current_action"].shape[0], device=self.device)
             shuffled = self.model.step(current.mu, current.mu, batch["current_action"][permutation]).environment
             shuffle_mse = self.environment_loss(shuffled, target.mu)
@@ -65,16 +76,24 @@ class ACWMTrainer:
                 "loss_kl_current": kl_current,
                 "loss_kl_next": kl_next,
                 "loss_sig_total": sig_loss,
+                "loss_action_consistency": action_consistency_loss,
+                "action_consistency_mse": action_consistency_loss,
                 "mu_current_mean_abs": current.mu.abs().mean(),
                 "mu_next_mean_abs": target.mu.abs().mean(),
                 "mu_current_std_mean": current.mu.std(dim=0).mean(),
                 "mu_next_std_mean": target.mu.std(dim=0).mean(),
                 "mu_combined_std_mean": sig_input.std(dim=0).mean(),
                 "mu_pred_std_mean": prediction.environment.std(dim=0).mean(),
+                "delta_pred_norm": delta_pred.norm(dim=-1).mean(),
+                "delta_pred_std_mean": delta_pred.std(dim=0).mean(),
                 "logvar_current_mean": current.logvar.mean(),
                 "logvar_next_mean": target.logvar.mean(),
                 "variance_current_mean": current.logvar.exp().mean(),
                 "variance_next_mean": target.logvar.exp().mean(),
+                "action_hat_mean": action_hat.mean(),
+                "action_hat_std": action_hat.std(),
+                "target_action_mean": target_action.mean(),
+                "target_action_std": target_action.std(),
                 "action_shuffle_mse_normal": normal_mse,
                 "action_shuffle_mse_shuffle": shuffle_mse,
                 "action_sensitivity": shuffle_mse - normal_mse,
