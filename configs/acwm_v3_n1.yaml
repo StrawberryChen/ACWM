@@ -87,7 +87,7 @@ loss:
 validation:
   prediction_video_interval: 1
   prediction_video_samples: 32
-  planning_interval: 10
+  planning_interval: 20
   planning_episodes: 50
   planning_videos: 50
   video_dir: outputs/videos/acwm_v3_n1
