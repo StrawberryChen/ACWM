@@ -8,9 +8,11 @@ from utils.factory import build_model
 
 def config():
     return {
+        "data": {"history_length": 3},
         "planner": {"action_dim": 2},
         "model": {
             "version": "v3_n1",
+            "history_size": 3,
             "latent_dim": 192,
             "image_size": 224,
             "patch_size": 14,
@@ -19,6 +21,7 @@ def config():
             "mlp_ratio": 4.0,
             "predictor": {"type": "v3_n1", "action_dim": 2},
             "action_consistency_head": {"hidden_dim": 64},
+            "temporal_encoder": {"num_layers": 1, "num_heads": 3, "dropout": 0.0},
             "agent_encoder": {"name": "gru", "image_channels": 3, "action_dim": 2, "state_dim": 192, "feature_dim": 192},
             "environment_encoder": {"name": "cnn", "image_channels": 3, "state_dim": 192},
             "agent_transition": {"name": "mlp", "agent_dim": 192, "action_dim": 2, "hidden_dim": 384},
@@ -28,10 +31,10 @@ def config():
 
 
 def batch(batch_size=2):
-    frames = torch.rand(batch_size, 1, 3, 32, 32)
+    frames = torch.rand(batch_size, 3, 3, 32, 32)
     return {
         "history_frames": frames,
-        "history_actions": torch.empty(batch_size, 0, 2),
+        "history_actions": torch.rand(batch_size, 2, 2) * 512,
         "current_action": torch.rand(batch_size, 2) * 512,
         "current_frame": frames[:, -1],
         "next_frame": torch.rand(batch_size, 3, 32, 32),
@@ -44,11 +47,14 @@ def test_v3_shapes_and_action_normalization():
     latent = model.encode_gaussian(torch.rand(2, 3, 32, 32))
     assert latent.mu.shape == (2, 192)
     assert latent.logvar.shape == (2, 192)
+    history = model.encode_gaussian_sequence(torch.rand(2, 3, 3, 32, 32))
+    assert history.mu.shape == (2, 3, 192)
+    assert history.logvar.shape == (2, 3, 192)
     action_norm = model.normalize_action(torch.tensor([[0.0, 512.0]]))
     assert torch.allclose(action_norm, torch.tensor([[-1.0, 1.0]]))
-    pred = model.predict_next(latent.mu, torch.rand(2, 2) * 512)
+    pred = model.predict_next(history.mu, torch.rand(2, 2) * 512)
     assert pred.shape == (2, 192)
-    delta = pred - latent.mu
+    delta = pred - history.mu[:, -1]
     action_hat = model.predict_action_from_delta(delta)
     assert action_hat.shape == (2, 2)
 
@@ -86,8 +92,24 @@ def test_v3_predict_next_does_not_call_action_consistency_head(monkeypatch):
         raise AssertionError("ActionConsistencyHead must not be called by predict_next/rollout/planning")
 
     monkeypatch.setattr(model.action_consistency_head, "forward", forbidden)
-    pred = model.predict_next(torch.randn(2, 192), torch.randn(2, 2), action_is_normalized=True)
+    pred = model.predict_next(torch.randn(2, 3, 192), torch.randn(2, 2), action_is_normalized=True)
     assert pred.shape == (2, 192)
+
+
+def test_v3_world_model_rollout_maintains_history_window(monkeypatch):
+    model = build_model(config())
+
+    def forbidden(_):
+        raise AssertionError("ActionConsistencyHead must not be called by rollout/planning")
+
+    monkeypatch.setattr(model.predictor.action_consistency_head, "forward", forbidden)
+    history = torch.randn(2, 3, 192)
+    current = history[:, -1]
+    actions = torch.randn(2, 5, 2).clamp(-1, 1)
+    predictions = model.rollout(history, current, actions)
+    assert len(predictions) == 5
+    assert predictions[-1].agent.shape == (2, 3, 192)
+    assert predictions[-1].environment.shape == (2, 192)
 
 
 def test_v3_action_target_shape_matches_head():

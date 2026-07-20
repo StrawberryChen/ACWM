@@ -4,7 +4,7 @@ device: cpu
 data:
   train_paths: []
   val_paths: []
-  history_length: 1
+  history_length: 3
   batch_size: 256
   num_workers: 2
 
@@ -12,7 +12,8 @@ model:
   version: v3_n1
   model_name: ACWM v3-N1
   latent_dim: 192
-  history_window: 1
+  history_window: 3
+  history_size: 3
   image_size: 224
   patch_size: 14
   vit_depth: 12
@@ -26,6 +27,10 @@ model:
     action_dim: 2
   action_consistency_head:
     hidden_dim: 384
+  temporal_encoder:
+    num_layers: 2
+    num_heads: 3
+    dropout: 0.0
   # Retained only to satisfy the shared factory signature; v3_n1 does not use these modules.
   agent_encoder:
     name: gru
@@ -65,7 +70,7 @@ training:
     prediction: 1.0
     beta_kl: 0.0001
     lambda_sig: 1.0
-    lambda_action_consistency: 1.0
+    lambda_action_consistency: 0.1
     goal: 1.0
   checkpoint: outputs/acwm_v3_n1/last.pt
   best_checkpoint: outputs/acwm_v3_n1/best_planning_success.pt
@@ -77,7 +82,7 @@ loss:
   prediction: 1.0
   beta_kl: 0.0001
   lambda_sig: 1.0
-  lambda_action_consistency: 1.0
+  lambda_action_consistency: 0.1
 
 validation:
   prediction_video_interval: 1

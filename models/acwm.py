@@ -48,9 +48,12 @@ class AgentCentricWorldModel(nn.Module):
         self._last_history_actions = history_actions
         if self.predictor_type == "v3_n1":
             assert self.predictor is not None, "v3_n1 predictor is not configured"
-            # mu_current: [B,192]
-            mu_current = self.predictor.encode_mean(current_frame)
-            return mu_current, mu_current
+            # frame_latents: [B,T,192], mu_current: [B,192].
+            frame_latents = self.predictor.encode_mean_sequence(history_frames)
+            assert frame_latents.shape[1] == self.history_size, (
+                f"v3_n1 expects history_size={self.history_size}, got {frame_latents.shape[1]}"
+            )
+            return frame_latents, frame_latents[:, -1]
         if self.predictor_type in {"motion_token", "forward_inverse"}:
             frame_latents = self.encode_frames(history_frames)
             assert frame_latents.shape[1] == self.history_size, (
@@ -66,8 +69,15 @@ class AgentCentricWorldModel(nn.Module):
         if self.predictor_type == "v3_n1":
             assert self.predictor is not None, "v3_n1 predictor is not configured"
             # next_environment: [B,192] = mu_pred_next.
-            next_environment = self.predictor.predict_next(environment_state, action, action_is_normalized)
-            return Prediction(next_environment, next_environment)
+            history = agent_state if agent_state.ndim == 3 else environment_state
+            next_environment = self.predictor.predict_next(history, action, action_is_normalized)
+            if agent_state.ndim == 3:
+                # next_agent/history: [B,T,192] = [z_{t-T+2},...,z_t,z_pred].
+                next_agent = torch.cat((agent_state[:, 1:], next_environment[:, None]), dim=1)
+            else:
+                # Backwards-compatible single-frame state.
+                next_agent = next_environment
+            return Prediction(next_agent, next_environment)
         if self.predictor_type == "motion_token":
             assert self.predictor is not None, "motion_token predictor is not configured"
             assert agent_state.ndim == 3, f"motion_token agent_state must be frame history [B,3,192], got {tuple(agent_state.shape)}"

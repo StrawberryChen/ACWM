@@ -29,14 +29,15 @@ def validate_prediction(trainer, loader: Iterable[dict[str, torch.Tensor]]) -> d
 
 def _v3_rollout_metrics(trainer, raw_batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     batch = trainer._move(raw_batch)
-    current = trainer.model.predictor.encode_gaussian(batch["current_frame"]).mu
-    mu = current
+    history = trainer.model.predictor.encode_gaussian_sequence(batch["history_frames"]).mu
+    current = history[:, -1]
     metrics = {}
     for step_index, action in enumerate(batch["rollout_actions"].unbind(dim=1), start=1):
-        mu = trainer.model.step(mu, mu, action).environment
+        prediction = trainer.model.step(history, current, action)
+        history, current = prediction.agent, prediction.environment
         if step_index in {1, 2, 3, 5}:
             target = trainer.model.predictor.encode_gaussian(batch["rollout_frames"][:, step_index - 1]).mu
-            metrics[f"rollout_mse_step_{step_index}"] = (mu - target).square().mean()
+            metrics[f"rollout_mse_step_{step_index}"] = (current - target).square().mean()
     return metrics
 
 

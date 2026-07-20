@@ -38,11 +38,13 @@ class ACWMTrainer:
     def compute_one_step(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         batch = self._move(batch)
         if getattr(self.model, "predictor_type", "adaln") == "v3_n1":
-            # o_t: [B,3,H,W], a_t raw: [B,2], o_next: [B,3,H,W]
-            current = self.model.predictor.encode_gaussian(batch["current_frame"])
+            # history_frames: [B,T,3,H,W], current action raw: [B,2], next_frame: [B,3,H,W].
+            history = self.model.predictor.encode_gaussian_sequence(batch["history_frames"])
+            # current.mu/logvar: [B,192] = z_t posterior params.
+            current = type(history)(history.mu[:, -1], history.logvar[:, -1])
             target = self.model.predictor.encode_gaussian(batch["next_frame"])
             # mu_pred_next: [B,192]
-            prediction = self.model.step(current.mu, current.mu, batch["current_action"])
+            prediction = self.model.step(history.mu, current.mu, batch["current_action"])
             pred_loss = self.environment_loss(prediction.environment, target.mu)
             # delta_pred: [B,192] = predicted latent displacement from the forward predictor.
             delta_pred = prediction.environment - current.mu
@@ -54,18 +56,19 @@ class ACWMTrainer:
                 f"action_hat shape {tuple(action_hat.shape)} must match target_action {tuple(target_action.shape)}"
             )
             action_consistency_loss = nn.functional.mse_loss(action_hat, target_action)
+            kl_history = self.model.predictor.kl_loss(history)
             kl_current = self.model.predictor.kl_loss(current)
             kl_next = self.model.predictor.kl_loss(target)
-            kl_loss = 0.5 * (kl_current + kl_next)
-            # sig_input: [2B,192]
-            sig_input = torch.cat((current.mu, target.mu), dim=0)
+            kl_loss = 0.5 * (kl_history + kl_next)
+            # sig_input: [(T+1)B,192] real history latents plus real next latent.
+            sig_input = torch.cat((history.mu.flatten(0, 1), target.mu), dim=0)
             sig_loss, sig_metrics = self.moment_sigreg_loss(sig_input)
             total = (self.weights.get("prediction", 1.0) * pred_loss
                      + self.weights.get("beta_kl", self.weights.get("kl", 1e-4)) * kl_loss
                      + self.weights.get("lambda_sig", self.weights.get("sigreg", 0.05)) * sig_loss
                      + self.weights.get("lambda_action_consistency", 1.0) * action_consistency_loss)
             permutation = torch.randperm(batch["current_action"].shape[0], device=self.device)
-            shuffled = self.model.step(current.mu, current.mu, batch["current_action"][permutation]).environment
+            shuffled = self.model.step(history.mu, current.mu, batch["current_action"][permutation]).environment
             shuffle_mse = self.environment_loss(shuffled, target.mu)
             normal_mse = pred_loss
             metrics = {
@@ -73,6 +76,7 @@ class ACWMTrainer:
                 "loss_total": total,
                 "loss_pred": pred_loss,
                 "loss_kl": kl_loss,
+                "loss_kl_history": kl_history,
                 "loss_kl_current": kl_current,
                 "loss_kl_next": kl_next,
                 "loss_sig_total": sig_loss,
@@ -181,7 +185,7 @@ class ACWMTrainer:
         batch = self._move(batch)
         agent, environment = self.model.encode(batch["history_frames"], batch["history_actions"], batch["current_frame"])
         predictions = self.model.rollout(agent, environment, batch["rollout_actions"], batch["history_actions"])
-        goal = self.model.environment_encoder(batch["goal_frame"])
+        goal = self.model.encode_goal(batch["goal_frame"]) if hasattr(self.model, "encode_goal") else self.model.environment_encoder(batch["goal_frame"])
         loss = self.goal_loss(predictions[-1].environment, goal)
         return {"loss": self.weights.get("goal", 1.0) * loss, "goal_loss": loss}
 

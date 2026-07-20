@@ -66,6 +66,7 @@ def build_model(config: dict[str, Any]) -> AgentCentricWorldModel:
         predictor = PREDICTORS.build(predictor_spec)
     elif predictor_type == "v3_n1":
         action_consistency_config = dict(model.get("action_consistency_head", {}))
+        temporal_config = dict(model.get("temporal_encoder", {}))
         predictor = PREDICTORS.build({
             "name": "v3_n1",
             "image_channels": model.get("image_channels", 3),
@@ -79,6 +80,10 @@ def build_model(config: dict[str, Any]) -> AgentCentricWorldModel:
             "logvar_min": model.get("logvar_min", -10.0),
             "logvar_max": model.get("logvar_max", 10.0),
             "action_consistency_hidden_dim": action_consistency_config.get("hidden_dim", 384),
+            "history_size": model.get("history_size", config.get("data", {}).get("history_length", 3)),
+            "temporal_layers": temporal_config.get("num_layers", 2),
+            "temporal_heads": temporal_config.get("num_heads", 3),
+            "temporal_dropout": temporal_config.get("dropout", 0.0),
         })
     return AgentCentricWorldModel(
         AGENT_ENCODERS.build(model["agent_encoder"]),

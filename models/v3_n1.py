@@ -55,14 +55,60 @@ class ActionConsistencyHead(nn.Module):
         return self.net(delta_pred)
 
 
+class V3N1TemporalEncoder(nn.Module):
+    """Causal temporal encoder over shared frame latents.
+
+    Input shape:  frame_latents [B, T, 192]
+    Output shape: h_t           [B, 192]
+    """
+
+    def __init__(self, latent_dim: int = 192, history_size: int = 3,
+                 num_layers: int = 2, num_heads: int = 3, dropout: float = 0.0):
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.history_size = history_size
+        self.temporal_pos = nn.Parameter(torch.zeros(1, history_size, latent_dim))
+        layer = nn.TransformerEncoderLayer(
+            d_model=latent_dim,
+            nhead=num_heads,
+            dim_feedforward=latent_dim * 4,
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(layer, num_layers=num_layers)
+
+    def forward(self, frame_latents: torch.Tensor) -> torch.Tensor:
+        assert frame_latents.ndim == 3, (
+            f"frame_latents must be [B,T,{self.latent_dim}], got {tuple(frame_latents.shape)}"
+        )
+        assert frame_latents.shape[1] <= self.history_size, (
+            f"history window {frame_latents.shape[1]} exceeds configured history_size={self.history_size}"
+        )
+        assert frame_latents.shape[-1] == self.latent_dim, (
+            f"frame latent dim must be {self.latent_dim}, got {frame_latents.shape[-1]}"
+        )
+        steps = frame_latents.shape[1]
+        # tokens: [B,T,192]
+        tokens = frame_latents + self.temporal_pos[:, -steps:]
+        # causal_mask: [T,T], token i can attend only to tokens <= i.
+        causal_mask = torch.triu(torch.ones(steps, steps, device=frame_latents.device, dtype=torch.bool), diagonal=1)
+        # encoded: [B,T,192]
+        encoded = self.transformer(tokens, mask=causal_mask)
+        # h_t: [B,192]
+        return encoded[:, -1]
+
+
 class V3N1GaussianWorldModel(nn.Module):
-    """ACWM v3-N1: one-frame action-conditioned Gaussian-mean world model."""
+    """ACWM v3-N1: history-window action-conditioned Gaussian-mean world model."""
 
     def __init__(self, image_channels: int = 3, latent_dim: int = 192, action_dim: int = 2,
                  image_size: int = 224, patch_size: int = 14, vit_depth: int = 12,
                  vit_heads: int = 3, mlp_ratio: float = 4.0,
                  logvar_min: float = -10.0, logvar_max: float = 10.0,
-                 action_consistency_hidden_dim: int = 384):
+                 action_consistency_hidden_dim: int = 384, history_size: int = 3,
+                 temporal_layers: int = 2, temporal_heads: int = 3, temporal_dropout: float = 0.0):
         super().__init__()
         try:
             from timm.models.vision_transformer import VisionTransformer
@@ -70,6 +116,7 @@ class V3N1GaussianWorldModel(nn.Module):
             raise ImportError("ACWM v3-N1 requires timm>=1.0") from error
         self.latent_dim = latent_dim
         self.action_dim = action_dim
+        self.history_size = history_size
         self.logvar_min = logvar_min
         self.logvar_max = logvar_max
         self.encoder = VisionTransformer(
@@ -91,8 +138,15 @@ class V3N1GaussianWorldModel(nn.Module):
             nn.GELU(),
             nn.Linear(64, latent_dim),
         )
+        self.temporal_encoder = V3N1TemporalEncoder(
+            latent_dim=latent_dim,
+            history_size=history_size,
+            num_layers=temporal_layers,
+            num_heads=temporal_heads,
+            dropout=temporal_dropout,
+        )
         self.dynamics_predictor = nn.Sequential(
-            nn.Linear(latent_dim * 2, 512),
+            nn.Linear(latent_dim * 3, 512),
             nn.LayerNorm(512),
             nn.GELU(),
             nn.Linear(512, 512),
@@ -142,20 +196,57 @@ class V3N1GaussianWorldModel(nn.Module):
     def encode_mean(self, images: torch.Tensor) -> torch.Tensor:
         return self.encode_gaussian(images).mu
 
+    def encode_gaussian_sequence(self, frames: torch.Tensor) -> GaussianLatent:
+        assert frames.ndim == 5, f"frames must be [B,T,3,H,W], got {tuple(frames.shape)}"
+        batch, steps = frames.shape[:2]
+        assert steps <= self.history_size, (
+            f"history window {steps} exceeds configured history_size={self.history_size}"
+        )
+        # flat_frames: [B*T,3,H,W]
+        flat_frames = frames.flatten(0, 1)
+        flat = self.encode_gaussian(flat_frames)
+        # mu/logvar: [B,T,192]
+        mu = flat.mu.view(batch, steps, self.latent_dim)
+        logvar = flat.logvar.view(batch, steps, self.latent_dim)
+        return GaussianLatent(mu, logvar)
+
+    def encode_mean_sequence(self, frames: torch.Tensor) -> torch.Tensor:
+        return self.encode_gaussian_sequence(frames).mu
+
     def predict_next(self, mu_current: torch.Tensor, action: torch.Tensor,
                      action_is_normalized: bool = False) -> torch.Tensor:
-        assert mu_current.ndim == 2, f"mu_current must be [B,192], got {tuple(mu_current.shape)}"
+        assert mu_current.ndim in {2, 3}, (
+            f"mu_current must be [B,192] or history [B,T,192], got {tuple(mu_current.shape)}"
+        )
         assert action.ndim == 2 and action.shape[-1] == self.action_dim, (
             f"action must be [B,{self.action_dim}], got {tuple(action.shape)}"
         )
+        if mu_current.ndim == 2:
+            # Backwards-compatible single-frame path: [B,192] -> [B,1,192].
+            frame_latents = mu_current[:, None]
+            z_current = mu_current
+        else:
+            assert mu_current.shape[-1] == self.latent_dim, (
+                f"history latent dim must be {self.latent_dim}, got {mu_current.shape[-1]}"
+            )
+            assert mu_current.shape[1] <= self.history_size, (
+                f"history window {mu_current.shape[1]} exceeds configured history_size={self.history_size}"
+            )
+            # frame_latents: [B,T,192], z_current: [B,192]
+            frame_latents = mu_current
+            z_current = mu_current[:, -1]
         # a_norm: [B,2]
         a_norm = action if action_is_normalized else self.normalize_action(action)
         # e_action: [B,192]
         e_action = self.action_encoder(a_norm)
-        # predictor_input: [B,384]
-        predictor_input = torch.cat((mu_current, e_action), dim=-1)
-        # mu_pred_next: [B,192]
-        return self.dynamics_predictor(predictor_input)
+        # h_t: [B,192] summarizes [z_{t-N+1},...,z_t].
+        h_t = self.temporal_encoder(frame_latents)
+        # predictor_input: [B,576] = concat(h_t, action, interaction).
+        predictor_input = torch.cat((h_t, e_action, h_t * e_action), dim=-1)
+        # delta_pred: [B,192]
+        delta_pred = self.dynamics_predictor(predictor_input)
+        # mu_pred_next: [B,192] residual prediction around current frame latent.
+        return z_current + delta_pred
 
     def predict_action_from_delta(self, delta_pred: torch.Tensor) -> torch.Tensor:
         assert delta_pred.ndim == 2, f"delta_pred must be [B,{self.latent_dim}], got {tuple(delta_pred.shape)}"
