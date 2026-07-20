@@ -29,7 +29,7 @@ class ActionConsistencyHead(nn.Module):
     """Predict the normalized action label from predicted latent displacement.
 
     Input shape:  delta_pred [B, 192]
-    Output shape: action_hat [B, action_dim]
+    Output shape: action_hat [B, action_block * action_dim]
     """
 
     def __init__(self, latent_dim: int = 192, action_dim: int = 2, hidden_dim: int = 384):
@@ -51,7 +51,7 @@ class ActionConsistencyHead(nn.Module):
         assert delta_pred.shape[-1] == self.latent_dim, (
             f"delta_pred latent dim must be {self.latent_dim}, got {delta_pred.shape[-1]}"
         )
-        # action_hat: [B, action_dim]
+        # action_hat: [B, action_block * action_dim]
         return self.net(delta_pred)
 
 
@@ -108,14 +108,17 @@ class V3N1GaussianWorldModel(nn.Module):
                  vit_heads: int = 3, mlp_ratio: float = 4.0,
                  logvar_min: float = -10.0, logvar_max: float = 10.0,
                  action_consistency_hidden_dim: int = 384, history_size: int = 3,
-                 temporal_layers: int = 2, temporal_heads: int = 3, temporal_dropout: float = 0.0):
+                 temporal_layers: int = 2, temporal_heads: int = 3, temporal_dropout: float = 0.0,
+                 action_block: int = 1):
         super().__init__()
         try:
             from timm.models.vision_transformer import VisionTransformer
         except ImportError as error:
             raise ImportError("ACWM v3-N1 requires timm>=1.0") from error
         self.latent_dim = latent_dim
-        self.action_dim = action_dim
+        self.raw_action_dim = action_dim
+        self.action_block = action_block
+        self.action_dim = action_dim * action_block
         self.history_size = history_size
         self.logvar_min = logvar_min
         self.logvar_max = logvar_max
@@ -133,7 +136,7 @@ class V3N1GaussianWorldModel(nn.Module):
         self.mean_head = nn.Linear(latent_dim, latent_dim)
         self.logvar_head = nn.Linear(latent_dim, latent_dim)
         self.action_encoder = nn.Sequential(
-            nn.Linear(action_dim, 64),
+            nn.Linear(self.action_dim, 64),
             nn.LayerNorm(64),
             nn.GELU(),
             nn.Linear(64, latent_dim),
@@ -156,28 +159,55 @@ class V3N1GaussianWorldModel(nn.Module):
         )
         self.action_consistency_head = ActionConsistencyHead(
             latent_dim=latent_dim,
-            action_dim=action_dim,
+            action_dim=self.action_dim,
             hidden_dim=action_consistency_hidden_dim,
         )
         self.register_buffer("image_mean", torch.tensor((0.485, 0.456, 0.406)).view(1, 3, 1, 1), persistent=False)
         self.register_buffer("image_std", torch.tensor((0.229, 0.224, 0.225)).view(1, 3, 1, 1), persistent=False)
-        self.register_buffer("action_min", torch.full((action_dim,), -1.0), persistent=True)
-        self.register_buffer("action_max", torch.full((action_dim,), 1.0), persistent=True)
+        self.register_buffer("action_min", torch.full((action_block, action_dim), -1.0), persistent=True)
+        self.register_buffer("action_max", torch.full((action_block, action_dim), 1.0), persistent=True)
 
     def set_action_stats(self, action_min: torch.Tensor, action_max: torch.Tensor) -> None:
-        assert action_min.shape == self.action_min.shape
-        assert action_max.shape == self.action_max.shape
+        if action_min.shape == (self.raw_action_dim,) and self.action_block == 1:
+            action_min = action_min.unsqueeze(0)
+        if action_max.shape == (self.raw_action_dim,) and self.action_block == 1:
+            action_max = action_max.unsqueeze(0)
+        assert action_min.shape == self.action_min.shape, (
+            f"action_min shape {tuple(action_min.shape)} must match action block stats "
+            f"{tuple(self.action_min.shape)}. Re-run scripts/prepare_pusht_zarr.py after changing action_block."
+        )
+        assert action_max.shape == self.action_max.shape, (
+            f"action_max shape {tuple(action_max.shape)} must match action block stats "
+            f"{tuple(self.action_max.shape)}. Re-run scripts/prepare_pusht_zarr.py after changing action_block."
+        )
         self.action_min.copy_(action_min.to(self.action_min))
         self.action_max.copy_(action_max.to(self.action_max))
 
     def normalize_action(self, action: torch.Tensor) -> torch.Tensor:
-        # action: [B,2] raw Push-T action; output [B,2] in [-1,1].
+        # action: [B,action_block,2] raw Push-T action block; output [B,action_block*2] in [-1,1].
+        action = self._as_action_block(action)
         denom = (self.action_max - self.action_min).clamp_min(1e-6)
-        return 2.0 * (action - self.action_min) / denom - 1.0
+        action_norm = 2.0 * (action - self.action_min) / denom - 1.0
+        return action_norm.flatten(1)
 
     def denormalize_action(self, action_norm: torch.Tensor) -> torch.Tensor:
-        # action_norm: [B,2] in [-1,1]; output raw Push-T action coordinates.
+        # action_norm: [B,action_block*2] in [-1,1]; output raw Push-T action block [B,action_block,2].
+        action_norm = self._as_action_block(action_norm)
         return (action_norm + 1.0) * 0.5 * (self.action_max - self.action_min) + self.action_min
+
+    def _as_action_block(self, action: torch.Tensor) -> torch.Tensor:
+        if action.ndim == 2 and action.shape[-1] == self.action_dim:
+            return action.view(action.shape[0], self.action_block, self.raw_action_dim)
+        if action.ndim == 2 and action.shape[-1] == self.raw_action_dim and self.action_block == 1:
+            return action[:, None]
+        assert action.ndim == 3, (
+            f"action must be [B,{self.action_dim}] or [B,{self.action_block},{self.raw_action_dim}], "
+            f"got {tuple(action.shape)}"
+        )
+        assert action.shape[1:] == (self.action_block, self.raw_action_dim), (
+            f"action block must be [B,{self.action_block},{self.raw_action_dim}], got {tuple(action.shape)}"
+        )
+        return action
 
     def encode_gaussian(self, images: torch.Tensor) -> GaussianLatent:
         assert images.ndim == 4, f"images must be [B,3,H,W], got {tuple(images.shape)}"
@@ -218,9 +248,7 @@ class V3N1GaussianWorldModel(nn.Module):
         assert mu_current.ndim in {2, 3}, (
             f"mu_current must be [B,192] or history [B,T,192], got {tuple(mu_current.shape)}"
         )
-        assert action.ndim == 2 and action.shape[-1] == self.action_dim, (
-            f"action must be [B,{self.action_dim}], got {tuple(action.shape)}"
-        )
+        assert action.ndim in {2, 3}, f"action must be [B,A] or [B,K,A], got {tuple(action.shape)}"
         if mu_current.ndim == 2:
             # Backwards-compatible single-frame path: [B,192] -> [B,1,192].
             frame_latents = mu_current[:, None]
@@ -235,8 +263,13 @@ class V3N1GaussianWorldModel(nn.Module):
             # frame_latents: [B,T,192], z_current: [B,192]
             frame_latents = mu_current
             z_current = mu_current[:, -1]
-        # a_norm: [B,2]
+        # a_norm: [B,action_block*2]
         a_norm = action if action_is_normalized else self.normalize_action(action)
+        if action_is_normalized:
+            a_norm = a_norm.flatten(1) if a_norm.ndim == 3 else a_norm
+            assert a_norm.ndim == 2 and a_norm.shape[-1] == self.action_dim, (
+                f"normalized action must be [B,{self.action_dim}], got {tuple(a_norm.shape)}"
+            )
         # e_action: [B,192]
         e_action = self.action_encoder(a_norm)
         # h_t: [B,192] summarizes [z_{t-N+1},...,z_t].
@@ -253,7 +286,7 @@ class V3N1GaussianWorldModel(nn.Module):
         assert delta_pred.shape[-1] == self.latent_dim, (
             f"delta_pred latent dim must be {self.latent_dim}, got {delta_pred.shape[-1]}"
         )
-        # action_hat: [B, action_dim], target is normalized real action in [-1, 1].
+        # action_hat: [B, action_block * action_dim], target is normalized real action in [-1, 1].
         return self.action_consistency_head(delta_pred)
 
     @staticmethod

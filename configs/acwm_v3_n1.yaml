@@ -25,6 +25,7 @@ model:
   predictor:
     type: v3_n1
     action_dim: 2
+    action_block: 5
   action_consistency_head:
     hidden_dim: 384
   temporal_encoder:
@@ -101,7 +102,7 @@ wandb:
 
 planner:
   horizon: 5
-  action_dim: 2
+  action_dim: 10
   action_low: -1.0
   action_high: 1.0
   population: 300
@@ -116,6 +117,7 @@ environment:
   observation_height: 224
   max_steps: 50
   replan_interval: 1
+  action_block: 5
   success_threshold: 0.95
   seed: 1000
   video_fps: 20

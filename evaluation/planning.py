@@ -154,6 +154,7 @@ class PlanningEvaluator:
             fixed_goal = None
         successes, rewards, final_rewards, episode_lengths, planning_times, video_paths = 0, [], [], [], [], []
         replan_interval = max(1, int(self.config.get("replan_interval", 1)))
+        action_block = max(1, int(self.config.get("action_block", 1)))
         progress = tqdm(range(episodes), desc="Push-T planning", dynamic_ncols=True, leave=True)
         for episode in progress:
             env = self._make_env()
@@ -187,19 +188,34 @@ class PlanningEvaluator:
             for step in range(self.config.get("max_steps", 300)):
                 if not action_queue:
                     history_frames = torch.stack(tuple(frames)).unsqueeze(0)
-                    history_actions = (torch.stack(tuple(actions)).unsqueeze(0) if self.history_length > 1
-                                       else torch.empty(1, 0, self.action_dim, device=self.device))
+                    if getattr(model, "predictor_type", None) == "v3_n1":
+                        history_actions = torch.empty(1, 0, self.action_dim, device=self.device)
+                    else:
+                        history_actions = (torch.stack(tuple(actions)).unsqueeze(0) if self.history_length > 1
+                                           else torch.empty(1, 0, self.action_dim, device=self.device))
                     start_plan = time.perf_counter()
                     planned = self.planner.plan(model, history_frames, history_actions, current.unsqueeze(0), goal)
                     planning_times.append(time.perf_counter() - start_plan)
-                    action_queue.extend(planned[0, :replan_interval].unbind(0))
+                    if getattr(model, "predictor_type", None) == "v3_n1" and hasattr(model, "denormalize_planner_action"):
+                        # planned block: [action_block * action_dim] normalized.
+                        # env queue receives raw single-step actions [action_dim].
+                        for block in planned[0, :replan_interval].unbind(0):
+                            raw_block = model.denormalize_planner_action(block[None])[0]
+                            assert raw_block.ndim == 2 and raw_block.shape[0] == action_block, (
+                                f"expected raw action block [{action_block},A], got {tuple(raw_block.shape)}"
+                            )
+                            action_queue.extend(raw_block.unbind(0))
+                    else:
+                        action_queue.extend(planned[0, :replan_interval].unbind(0))
                 action = action_queue.popleft()
-                env_action = model.denormalize_planner_action(action[None])[0] if hasattr(model, "denormalize_planner_action") else action
+                env_action = action if getattr(model, "predictor_type", None) == "v3_n1" else (
+                    model.denormalize_planner_action(action[None])[0] if hasattr(model, "denormalize_planner_action") else action
+                )
                 observation, reward, terminated, truncated, info = env.step(env_action.cpu().numpy())
                 episode_reward = max(episode_reward, float(reward))
                 current = self._image(observation)
                 frames.append(current)
-                if self.history_length > 1:
+                if self.history_length > 1 and getattr(model, "predictor_type", None) != "v3_n1":
                     actions.append(action)
                 if video:
                     video.append(env.render())

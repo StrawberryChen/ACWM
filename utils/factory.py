@@ -84,6 +84,7 @@ def build_model(config: dict[str, Any]) -> AgentCentricWorldModel:
             "temporal_layers": temporal_config.get("num_layers", 2),
             "temporal_heads": temporal_config.get("num_heads", 3),
             "temporal_dropout": temporal_config.get("dropout", 0.0),
+            "action_block": predictor_config.get("action_block", model.get("action_block", 1)),
         })
     return AgentCentricWorldModel(
         AGENT_ENCODERS.build(model["agent_encoder"]),
