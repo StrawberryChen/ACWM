@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 import torch
+from torch.nn import functional as F
 from tqdm.auto import tqdm
 
 
@@ -26,6 +27,14 @@ def _image_tensor(observation: Any, device: torch.device) -> torch.Tensor:
     return image / 255.0 if image.max() > 1 else image
 
 
+def _resize_image_tensor(image: torch.Tensor, height: int, width: int) -> torch.Tensor:
+    # image: [3,H,W] -> [3,height,width]
+    assert image.ndim == 3, f"image tensor must be [C,H,W], got {tuple(image.shape)}"
+    if image.shape[-2:] == (height, width):
+        return image
+    return F.interpolate(image.unsqueeze(0), size=(height, width), mode="bilinear", align_corners=False).squeeze(0)
+
+
 class PlanningEvaluator:
     """Closed-loop CEM evaluation in the official gym-pusht environment."""
 
@@ -37,6 +46,12 @@ class PlanningEvaluator:
         self.action_dim = action_dim
         self.device = torch.device(device)
         self.dataset_paths = dataset_paths or []
+        self.observation_height = int(self.config.get("observation_height", 96))
+        self.observation_width = int(self.config.get("observation_width", 96))
+
+    def _image(self, observation: Any) -> torch.Tensor:
+        image = _image_tensor(observation, self.device)
+        return _resize_image_tensor(image, self.observation_height, self.observation_width)
 
     def _make_env(self):
         try:
@@ -64,11 +79,11 @@ class PlanningEvaluator:
                 from PIL import Image
             except ImportError as error:
                 raise ImportError("loading environment.goal_image requires Pillow") from error
-            return _image_tensor(np.asarray(Image.open(self.config["goal_image"]).convert("RGB")), self.device).unsqueeze(0)
+            return self._image(np.asarray(Image.open(self.config["goal_image"]).convert("RGB"))).unsqueeze(0)
         reset_state = self.config.get("goal_reset_state", [256.0, 256.0, 256.0, 256.0, 0.785398])
         goal_observation, _ = env.reset(options={"reset_to_state": reset_state})
         self._set_goal_pose(env, np.asarray(reset_state, dtype=np.float32))
-        return _image_tensor(goal_observation, self.device).unsqueeze(0)
+        return self._image(goal_observation).unsqueeze(0)
 
     @staticmethod
     def _set_goal_pose(env, goal_state: np.ndarray) -> None:
@@ -146,8 +161,8 @@ class PlanningEvaluator:
                 case = dataset_cases[episode]
                 observation, _ = env.reset(options={"reset_to_state": case["start_state"]})
                 self._set_goal_pose(env, case["goal_state"])
-                current = _image_tensor(observation, self.device)
-                frames = deque([_image_tensor(frame, self.device) for frame in case["history_frames"]],
+                current = self._image(observation)
+                frames = deque([self._image(frame) for frame in case["history_frames"]],
                                maxlen=self.history_length)
                 frames[-1] = current
                 actions = deque([torch.as_tensor(action, device=self.device).float()
@@ -155,13 +170,13 @@ class PlanningEvaluator:
                                 maxlen=max(self.history_length - 1, 1))
                 goal_observation, _ = env.reset(options={"reset_to_state": case["goal_state"]})
                 self._set_goal_pose(env, case["goal_state"])
-                goal = _image_tensor(goal_observation, self.device).unsqueeze(0)
+                goal = self._image(goal_observation).unsqueeze(0)
                 observation, _ = env.reset(options={"reset_to_state": case["start_state"]})
                 self._set_goal_pose(env, case["goal_state"])
-                current = _image_tensor(observation, self.device)
+                current = self._image(observation)
             else:
                 observation, _ = env.reset(seed=self.config.get("seed", 0) + episode)
-                current = _image_tensor(observation, self.device)
+                current = self._image(observation)
                 frames = deque([current.clone() for _ in range(self.history_length)], maxlen=self.history_length)
                 actions = deque([torch.zeros(self.action_dim, device=self.device) for _ in range(self.history_length - 1)],
                                 maxlen=max(self.history_length - 1, 1))
@@ -182,7 +197,7 @@ class PlanningEvaluator:
                 env_action = model.denormalize_planner_action(action[None])[0] if hasattr(model, "denormalize_planner_action") else action
                 observation, reward, terminated, truncated, info = env.step(env_action.cpu().numpy())
                 episode_reward = max(episode_reward, float(reward))
-                current = _image_tensor(observation, self.device)
+                current = self._image(observation)
                 frames.append(current)
                 if self.history_length > 1:
                     actions.append(action)
