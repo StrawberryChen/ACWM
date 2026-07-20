@@ -70,7 +70,7 @@ class AgentCentricWorldModel(nn.Module):
             assert self.predictor is not None, "v3_n1 predictor is not configured"
             # next_environment: [B,192] = mu_pred_next.
             history = agent_state if agent_state.ndim == 3 else environment_state
-            next_environment = self.predictor.predict_next(history, action, action_is_normalized)
+            next_environment = self.predictor.predict_next(history, action, history_actions, action_is_normalized)
             if agent_state.ndim == 3:
                 # next_agent/history: [B,T,192] = [z_{t-T+2},...,z_t,z_pred].
                 next_agent = torch.cat((agent_state[:, 1:], next_environment[:, None]), dim=1)
@@ -103,8 +103,14 @@ class AgentCentricWorldModel(nn.Module):
 
     def rollout(self, agent_state: torch.Tensor, environment_state: torch.Tensor,
                 actions: torch.Tensor, history_actions: torch.Tensor | None = None) -> list[Prediction]:
-        if self.predictor_type == "motion_token":
+        if self.predictor_type in {"motion_token", "v3_n1"}:
             history_actions = self._initial_previous_actions(actions, history_actions)
+        v3_actions_are_normalized = (
+            self.predictor_type == "v3_n1"
+            and actions.ndim == 3
+            and self.predictor is not None
+            and actions.shape[-1] == self.predictor.action_dim
+        )
         predictions = []
         for action in actions.unbind(dim=1):
             if self.predictor_type == "motion_token":
@@ -112,6 +118,13 @@ class AgentCentricWorldModel(nn.Module):
                 # Keep only the two previous actions; step() appends the current action.
                 # history_actions: [B, 2, A] = [a_{prev1}, a_current]
                 history_actions = torch.cat((history_actions[:, 1:], action[:, None]), dim=1)
+            elif self.predictor_type == "v3_n1":
+                prediction = self.step(agent_state, environment_state, action, history_actions,
+                                       action_is_normalized=v3_actions_are_normalized)
+                # history_actions: [B, history_size-1, action_block*action_dim]
+                assert self.predictor is not None
+                action_norm = action if v3_actions_are_normalized else self.predictor.normalize_action(action)
+                history_actions = torch.cat((history_actions[:, 1:], action_norm[:, None]), dim=1)
             else:
                 prediction = self.step(agent_state, environment_state, action,
                                        action_is_normalized=(self.predictor_type == "v3_n1"))
@@ -164,9 +177,14 @@ class AgentCentricWorldModel(nn.Module):
         if history_actions is not None and history_actions.shape[1] == self.history_size:
             history_actions = history_actions[:, -self.history_size + 1:]
         if history_actions is None:
-            zeros = torch.zeros(actions.shape[0], self.history_size - 1, actions.shape[-1],
+            action_dim = self.predictor.action_dim if self.predictor_type == "v3_n1" and self.predictor is not None else actions.shape[-1]
+            zeros = torch.zeros(actions.shape[0], self.history_size - 1, action_dim,
                                 device=actions.device, dtype=actions.dtype)
             return zeros
+        if self.predictor_type == "v3_n1" and history_actions.ndim == 4:
+            # Raw action block history [B,T-1,action_block,2] -> normalized [B,T-1,action_block*2].
+            assert self.predictor is not None
+            history_actions = self.predictor.normalize_action_sequence(history_actions)
         if history_actions.shape[0] != actions.shape[0]:
             assert actions.shape[0] % history_actions.shape[0] == 0, (
                 "cannot broadcast encoded history actions to rollout population"

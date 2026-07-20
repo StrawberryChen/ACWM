@@ -65,7 +65,7 @@ def test_v3_shapes_and_action_normalization():
 
 def test_v3_training_backward():
     model = build_model(config())
-    model.set_action_stats(torch.tensor([0.0, 0.0]), torch.tensor([512.0, 512.0]))
+    model.set_action_stats(torch.zeros(5, 2), torch.full((5, 2), 512.0))
     trainer = ACWMTrainer(model, torch.optim.AdamW(model.parameters()),
                           {"prediction": 1.0, "beta_kl": 1e-4, "lambda_sig": 1.0,
                            "lambda_action_consistency": 1.0})
@@ -80,7 +80,7 @@ def test_v3_training_backward():
 
 def test_v3_action_consistency_can_be_disabled():
     model = build_model(config())
-    model.set_action_stats(torch.tensor([0.0, 0.0]), torch.tensor([512.0, 512.0]))
+    model.set_action_stats(torch.zeros(5, 2), torch.full((5, 2), 512.0))
     trainer = ACWMTrainer(model, torch.optim.AdamW(model.parameters()),
                           {"prediction": 1.0, "beta_kl": 1e-4, "lambda_sig": 1.0,
                            "lambda_action_consistency": 0.0})

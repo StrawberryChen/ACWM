@@ -31,10 +31,12 @@ def _v3_rollout_metrics(trainer, raw_batch: dict[str, torch.Tensor]) -> dict[str
     batch = trainer._move(raw_batch)
     history = trainer.model.predictor.encode_gaussian_sequence(batch["history_frames"]).mu
     current = history[:, -1]
+    history_actions = batch["history_actions"]
     metrics = {}
     for step_index, action in enumerate(batch["rollout_actions"].unbind(dim=1), start=1):
-        prediction = trainer.model.step(history, current, action)
+        prediction = trainer.model.step(history, current, action, history_actions)
         history, current = prediction.agent, prediction.environment
+        history_actions = torch.cat((history_actions[:, 1:], action[:, None]), dim=1)
         if step_index in {1, 2, 3, 5}:
             target = trainer.model.predictor.encode_gaussian(batch["rollout_frames"][:, step_index - 1]).mu
             metrics[f"rollout_mse_step_{step_index}"] = (current - target).square().mean()
@@ -55,7 +57,7 @@ def save_prediction_animation(trainer, loader, path: str | Path, max_samples: in
     for raw_batch in loader:
         batch = trainer._move(raw_batch)
         agent, environment = trainer.model.encode(batch["history_frames"], batch["history_actions"], batch["current_frame"])
-        prediction = trainer.model.step(agent, environment, batch["current_action"])
+        prediction = trainer.model.step(agent, environment, batch["current_action"], batch["history_actions"])
         target_environment = trainer.model.encode_goal(batch["next_frame"]) if hasattr(trainer.model, "encode_goal") else trainer.model.environment_encoder(batch["next_frame"])
         if getattr(trainer.model, "predictor_type", "adaln") in {"motion_token", "forward_inverse", "v3_n1"}:
             agent_error = None

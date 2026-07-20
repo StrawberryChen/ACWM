@@ -44,7 +44,7 @@ class ACWMTrainer:
             current = type(history)(history.mu[:, -1], history.logvar[:, -1])
             target = self.model.predictor.encode_gaussian(batch["next_frame"])
             # mu_pred_next: [B,192]
-            prediction = self.model.step(history.mu, current.mu, batch["current_action"])
+            prediction = self.model.step(history.mu, current.mu, batch["current_action"], batch["history_actions"])
             pred_loss = self.environment_loss(prediction.environment, target.mu)
             # delta_pred: [B,192] = predicted latent displacement from the forward predictor.
             delta_pred = prediction.environment - current.mu
@@ -68,7 +68,8 @@ class ACWMTrainer:
                      + self.weights.get("lambda_sig", self.weights.get("sigreg", 0.05)) * sig_loss
                      + self.weights.get("lambda_action_consistency", 1.0) * action_consistency_loss)
             permutation = torch.randperm(batch["current_action"].shape[0], device=self.device)
-            shuffled = self.model.step(history.mu, current.mu, batch["current_action"][permutation]).environment
+            shuffled = self.model.step(history.mu, current.mu, batch["current_action"][permutation],
+                                       batch["history_actions"]).environment
             shuffle_mse = self.environment_loss(shuffled, target.mu)
             normal_mse = pred_loss
             metrics = {

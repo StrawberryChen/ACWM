@@ -56,9 +56,10 @@ class ActionConsistencyHead(nn.Module):
 
 
 class V3N1TemporalEncoder(nn.Module):
-    """Causal temporal encoder over shared frame latents.
+    """Causal temporal encoder over LeWorld-style state-action tokens.
 
-    Input shape:  frame_latents [B, T, 192]
+    Input shape:  frame_latents  [B, T, 192]
+                  action_latents [B, T, 192]
     Output shape: h_t           [B, 192]
     """
 
@@ -79,9 +80,15 @@ class V3N1TemporalEncoder(nn.Module):
         )
         self.transformer = nn.TransformerEncoder(layer, num_layers=num_layers)
 
-    def forward(self, frame_latents: torch.Tensor) -> torch.Tensor:
+    def forward(self, frame_latents: torch.Tensor, action_latents: torch.Tensor) -> torch.Tensor:
         assert frame_latents.ndim == 3, (
             f"frame_latents must be [B,T,{self.latent_dim}], got {tuple(frame_latents.shape)}"
+        )
+        assert action_latents.ndim == 3, (
+            f"action_latents must be [B,T,{self.latent_dim}], got {tuple(action_latents.shape)}"
+        )
+        assert action_latents.shape == frame_latents.shape, (
+            f"action_latents shape {tuple(action_latents.shape)} must match frame_latents {tuple(frame_latents.shape)}"
         )
         assert frame_latents.shape[1] <= self.history_size, (
             f"history window {frame_latents.shape[1]} exceeds configured history_size={self.history_size}"
@@ -91,7 +98,7 @@ class V3N1TemporalEncoder(nn.Module):
         )
         steps = frame_latents.shape[1]
         # tokens: [B,T,192]
-        tokens = frame_latents + self.temporal_pos[:, -steps:]
+        tokens = frame_latents + action_latents + self.temporal_pos[:, -steps:]
         # causal_mask: [T,T], token i can attend only to tokens <= i.
         causal_mask = torch.triu(torch.ones(steps, steps, device=frame_latents.device, dtype=torch.bool), diagonal=1)
         # encoded: [B,T,192]
@@ -190,10 +197,58 @@ class V3N1GaussianWorldModel(nn.Module):
         action_norm = 2.0 * (action - self.action_min) / denom - 1.0
         return action_norm.flatten(1)
 
+    def normalize_action_sequence(self, actions: torch.Tensor) -> torch.Tensor:
+        # actions: [B,T,action_block,2] raw action blocks; output [B,T,action_block*2].
+        assert actions.ndim == 4, (
+            f"actions must be [B,T,{self.action_block},{self.raw_action_dim}], got {tuple(actions.shape)}"
+        )
+        batch, steps = actions.shape[:2]
+        flat = self.normalize_action(actions.flatten(0, 1))
+        return flat.view(batch, steps, self.action_dim)
+
     def denormalize_action(self, action_norm: torch.Tensor) -> torch.Tensor:
         # action_norm: [B,action_block*2] in [-1,1]; output raw Push-T action block [B,action_block,2].
         action_norm = self._as_action_block(action_norm)
         return (action_norm + 1.0) * 0.5 * (self.action_max - self.action_min) + self.action_min
+
+    def action_sequence(self, history_actions: torch.Tensor, current_action: torch.Tensor,
+                        action_is_normalized: bool = False) -> torch.Tensor:
+        """Build LeWorld-style action history ending in the current action.
+
+        history_actions raw shape: [B,T-1,action_block,2]
+        current_action raw shape:  [B,action_block,2]
+        output normalized shape:   [B,T,action_block*2]
+        """
+        if action_is_normalized:
+            if current_action.ndim == 2:
+                current = current_action
+            else:
+                current = current_action.flatten(1)
+            if history_actions is None or history_actions.numel() == 0:
+                previous = current[:, None].expand(-1, self.history_size - 1, -1)
+            else:
+                previous = (self.normalize_action_sequence(history_actions)
+                            if history_actions.ndim == 4 else history_actions)
+            assert previous.ndim == 3 and previous.shape[-1] == self.action_dim, (
+                f"normalized history_actions must be [B,T-1,{self.action_dim}], got {tuple(previous.shape)}"
+            )
+            seq = torch.cat((previous, current[:, None]), dim=1)
+        else:
+            current = self.normalize_action(current_action)
+            if history_actions is None or history_actions.numel() == 0:
+                previous = current[:, None].expand(-1, self.history_size - 1, -1)
+            else:
+                previous = (history_actions if history_actions.ndim == 3
+                            else self.normalize_action_sequence(history_actions))
+                assert previous.ndim == 3 and previous.shape[-1] == self.action_dim, (
+                    f"history_actions must be normalized [B,T-1,{self.action_dim}] or raw "
+                    f"[B,T-1,{self.action_block},{self.raw_action_dim}], got {tuple(history_actions.shape)}"
+                )
+            seq = torch.cat((previous, current[:, None]), dim=1)
+        assert seq.ndim == 3 and seq.shape[1] == self.history_size and seq.shape[-1] == self.action_dim, (
+            f"action sequence must be [B,{self.history_size},{self.action_dim}], got {tuple(seq.shape)}"
+        )
+        return seq
 
     def _as_action_block(self, action: torch.Tensor) -> torch.Tensor:
         if action.ndim == 2 and action.shape[-1] == self.action_dim:
@@ -244,6 +299,7 @@ class V3N1GaussianWorldModel(nn.Module):
         return self.encode_gaussian_sequence(frames).mu
 
     def predict_next(self, mu_current: torch.Tensor, action: torch.Tensor,
+                     history_actions: torch.Tensor | None = None,
                      action_is_normalized: bool = False) -> torch.Tensor:
         assert mu_current.ndim in {2, 3}, (
             f"mu_current must be [B,192] or history [B,T,192], got {tuple(mu_current.shape)}"
@@ -263,17 +319,14 @@ class V3N1GaussianWorldModel(nn.Module):
             # frame_latents: [B,T,192], z_current: [B,192]
             frame_latents = mu_current
             z_current = mu_current[:, -1]
-        # a_norm: [B,action_block*2]
-        a_norm = action if action_is_normalized else self.normalize_action(action)
-        if action_is_normalized:
-            a_norm = a_norm.flatten(1) if a_norm.ndim == 3 else a_norm
-            assert a_norm.ndim == 2 and a_norm.shape[-1] == self.action_dim, (
-                f"normalized action must be [B,{self.action_dim}], got {tuple(a_norm.shape)}"
-            )
-        # e_action: [B,192]
-        e_action = self.action_encoder(a_norm)
-        # h_t: [B,192] summarizes [z_{t-N+1},...,z_t].
-        h_t = self.temporal_encoder(frame_latents)
+        # action_seq: [B,T,action_block*2], matching LeWorld act_trunc.
+        action_seq = self.action_sequence(history_actions, action, action_is_normalized)
+        # e_action_seq: [B,T,192]
+        e_action_seq = self.action_encoder(action_seq.flatten(0, 1)).view(action_seq.shape[0], action_seq.shape[1], -1)
+        # h_t: [B,192] summarizes paired [z_{t-N+1:t}, a_{t-N+1:t}].
+        h_t = self.temporal_encoder(frame_latents, e_action_seq)
+        # e_action: [B,192] current action block embedding.
+        e_action = e_action_seq[:, -1]
         # predictor_input: [B,576] = concat(h_t, action, interaction).
         predictor_input = torch.cat((h_t, e_action, h_t * e_action), dim=-1)
         # delta_pred: [B,192]

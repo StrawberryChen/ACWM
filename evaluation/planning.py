@@ -155,6 +155,7 @@ class PlanningEvaluator:
         successes, rewards, final_rewards, episode_lengths, planning_times, video_paths = 0, [], [], [], [], []
         replan_interval = max(1, int(self.config.get("replan_interval", 1)))
         action_block = max(1, int(self.config.get("action_block", 1)))
+        raw_action_dim = max(1, self.action_dim // action_block)
         progress = tqdm(range(episodes), desc="Push-T planning", dynamic_ncols=True, leave=True)
         for episode in progress:
             env = self._make_env()
@@ -166,9 +167,14 @@ class PlanningEvaluator:
                 frames = deque([self._image(frame) for frame in case["history_frames"]],
                                maxlen=self.history_length)
                 frames[-1] = current
-                actions = deque([torch.as_tensor(action, device=self.device).float()
-                                 for action in case["history_actions"]],
-                                maxlen=max(self.history_length - 1, 1))
+                if getattr(model, "predictor_type", None) == "v3_n1":
+                    raw_history_actions = torch.as_tensor(case["history_actions"], device=self.device).float().unsqueeze(0)
+                    normalized_history_actions = model.predictor.normalize_action_sequence(raw_history_actions)[0]
+                    actions = deque(normalized_history_actions.unbind(0), maxlen=max(self.history_length - 1, 1))
+                else:
+                    actions = deque([torch.as_tensor(action, device=self.device).float()
+                                     for action in case["history_actions"]],
+                                    maxlen=max(self.history_length - 1, 1))
                 goal_observation, _ = env.reset(options={"reset_to_state": case["goal_state"]})
                 self._set_goal_pose(env, case["goal_state"])
                 goal = self._image(goal_observation).unsqueeze(0)
@@ -184,12 +190,14 @@ class PlanningEvaluator:
                 goal = fixed_goal
             video = [env.render()] if episode < videos_to_save else []
             episode_reward, succeeded = 0.0, False
-            action_queue: deque[torch.Tensor] = deque()
+            action_queue: deque[tuple[torch.Tensor, torch.Tensor | None, bool]] = deque()
             for step in range(self.config.get("max_steps", 300)):
                 if not action_queue:
                     history_frames = torch.stack(tuple(frames)).unsqueeze(0)
                     if getattr(model, "predictor_type", None) == "v3_n1":
-                        history_actions = torch.empty(1, 0, self.action_dim, device=self.device)
+                        history_actions = (torch.stack(tuple(actions)).unsqueeze(0) if len(actions)
+                                           else torch.zeros(1, self.history_length - 1, self.action_dim,
+                                                            device=self.device))
                     else:
                         history_actions = (torch.stack(tuple(actions)).unsqueeze(0) if self.history_length > 1
                                            else torch.empty(1, 0, self.action_dim, device=self.device))
@@ -204,17 +212,30 @@ class PlanningEvaluator:
                             assert raw_block.ndim == 2 and raw_block.shape[0] == action_block, (
                                 f"expected raw action block [{action_block},A], got {tuple(raw_block.shape)}"
                             )
-                            action_queue.extend(raw_block.unbind(0))
+                            for raw_index, raw_action in enumerate(raw_block.unbind(0)):
+                                action_queue.append((raw_action, block, raw_index == action_block - 1))
                     else:
-                        action_queue.extend(planned[0, :replan_interval].unbind(0))
-                action = action_queue.popleft()
+                        action_queue.extend((action, None, True) for action in planned[0, :replan_interval].unbind(0))
+                action, planned_block, block_done = action_queue.popleft()
                 env_action = action if getattr(model, "predictor_type", None) == "v3_n1" else (
                     model.denormalize_planner_action(action[None])[0] if hasattr(model, "denormalize_planner_action") else action
+                )
+                assert env_action.ndim == 1 and env_action.shape[-1] == raw_action_dim, (
+                    f"env action must be [{raw_action_dim}], got {tuple(env_action.shape)}"
                 )
                 observation, reward, terminated, truncated, info = env.step(env_action.cpu().numpy())
                 episode_reward = max(episode_reward, float(reward))
                 current = self._image(observation)
-                frames.append(current)
+                if getattr(model, "predictor_type", None) == "v3_n1":
+                    # LeWorld action_block alignment: one latent/frame-history step
+                    # advances only after action_block raw env actions have executed.
+                    if block_done:
+                        frames.append(current)
+                        if self.history_length > 1:
+                            assert planned_block is not None
+                            actions.append(planned_block)
+                else:
+                    frames.append(current)
                 if self.history_length > 1 and getattr(model, "predictor_type", None) != "v3_n1":
                     actions.append(action)
                 if video:
