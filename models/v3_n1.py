@@ -171,30 +171,31 @@ class V3N1GaussianWorldModel(nn.Module):
         )
         self.register_buffer("image_mean", torch.tensor((0.485, 0.456, 0.406)).view(1, 3, 1, 1), persistent=False)
         self.register_buffer("image_std", torch.tensor((0.229, 0.224, 0.225)).view(1, 3, 1, 1), persistent=False)
-        self.register_buffer("action_min", torch.full((action_block, action_dim), -1.0), persistent=True)
-        self.register_buffer("action_max", torch.full((action_block, action_dim), 1.0), persistent=True)
+        self.register_buffer("action_mean", torch.zeros(action_dim), persistent=True)
+        self.register_buffer("action_std", torch.ones(action_dim), persistent=True)
 
-    def set_action_stats(self, action_min: torch.Tensor, action_max: torch.Tensor) -> None:
-        if action_min.shape == (self.raw_action_dim,) and self.action_block == 1:
-            action_min = action_min.unsqueeze(0)
-        if action_max.shape == (self.raw_action_dim,) and self.action_block == 1:
-            action_max = action_max.unsqueeze(0)
-        assert action_min.shape == self.action_min.shape, (
-            f"action_min shape {tuple(action_min.shape)} must match action block stats "
-            f"{tuple(self.action_min.shape)}. Re-run scripts/prepare_pusht_zarr.py after changing action_block."
+    def set_action_stats(self, action_mean: torch.Tensor, action_std: torch.Tensor) -> None:
+        """Set LeWorld-style z-score action statistics.
+
+        action_mean/action_std: [2] raw Push-T action statistics shared by all
+        action_block positions. The flattened predictor action is still
+        [B, action_block * 2].
+        """
+        action_mean = action_mean.flatten()
+        action_std = action_std.flatten().clamp_min(1e-6)
+        assert action_mean.shape == self.action_mean.shape, (
+            f"action_mean shape {tuple(action_mean.shape)} must be [{self.raw_action_dim}]"
         )
-        assert action_max.shape == self.action_max.shape, (
-            f"action_max shape {tuple(action_max.shape)} must match action block stats "
-            f"{tuple(self.action_max.shape)}. Re-run scripts/prepare_pusht_zarr.py after changing action_block."
+        assert action_std.shape == self.action_std.shape, (
+            f"action_std shape {tuple(action_std.shape)} must be [{self.raw_action_dim}]"
         )
-        self.action_min.copy_(action_min.to(self.action_min))
-        self.action_max.copy_(action_max.to(self.action_max))
+        self.action_mean.copy_(action_mean.to(self.action_mean))
+        self.action_std.copy_(action_std.to(self.action_std))
 
     def normalize_action(self, action: torch.Tensor) -> torch.Tensor:
-        # action: [B,action_block,2] raw Push-T action block; output [B,action_block*2] in [-1,1].
+        # action: [B,action_block,2] raw Push-T action block; output [B,action_block*2] z-scored.
         action = self._as_action_block(action)
-        denom = (self.action_max - self.action_min).clamp_min(1e-6)
-        action_norm = 2.0 * (action - self.action_min) / denom - 1.0
+        action_norm = (action - self.action_mean) / self.action_std
         return action_norm.flatten(1)
 
     def normalize_action_sequence(self, actions: torch.Tensor) -> torch.Tensor:
@@ -207,9 +208,9 @@ class V3N1GaussianWorldModel(nn.Module):
         return flat.view(batch, steps, self.action_dim)
 
     def denormalize_action(self, action_norm: torch.Tensor) -> torch.Tensor:
-        # action_norm: [B,action_block*2] in [-1,1]; output raw Push-T action block [B,action_block,2].
+        # action_norm: [B,action_block*2] z-scored; output raw Push-T action block [B,action_block,2].
         action_norm = self._as_action_block(action_norm)
-        return (action_norm + 1.0) * 0.5 * (self.action_max - self.action_min) + self.action_min
+        return action_norm * self.action_std + self.action_mean
 
     def action_sequence(self, history_actions: torch.Tensor, current_action: torch.Tensor,
                         action_is_normalized: bool = False) -> torch.Tensor:
@@ -339,7 +340,7 @@ class V3N1GaussianWorldModel(nn.Module):
         assert delta_pred.shape[-1] == self.latent_dim, (
             f"delta_pred latent dim must be {self.latent_dim}, got {delta_pred.shape[-1]}"
         )
-        # action_hat: [B, action_block * action_dim], target is normalized real action in [-1, 1].
+        # action_hat: [B, action_block * action_dim], target is z-scored real action.
         return self.action_consistency_head(delta_pred)
 
     @staticmethod

@@ -48,10 +48,10 @@ def main() -> None:
     if optimizer_type is None:
         raise ValueError(f"unsupported optimizer: {optimizer_name}")
     if model_version == "v3_n1":
-        action_min, action_max = _action_stats(train_dataset)
-        model.set_action_stats(action_min, action_max)
-        config["action_min"] = action_min.tolist()
-        config["action_max"] = action_max.tolist()
+        action_mean, action_std = _action_stats(train_dataset)
+        model.set_action_stats(action_mean, action_std)
+        config["action_mean"] = action_mean.tolist()
+        config["action_std"] = action_std.tolist()
     optimizer_kwargs = {"lr": training["learning_rate"], "weight_decay": training.get("weight_decay", 0.0)}
     if optimizer_name == "adamw" and "betas" in training:
         optimizer_kwargs["betas"] = tuple(training["betas"])
@@ -117,8 +117,9 @@ def main() -> None:
 
 
 def _action_stats(dataset: TrajectoryDataset) -> tuple[torch.Tensor, torch.Tensor]:
-    actions = torch.cat([trajectory.actions for trajectory in dataset.trajectories], dim=0)
-    return actions.min(dim=0).values, actions.max(dim=0).values
+    actions = torch.cat([trajectory.actions for trajectory in dataset.trajectories], dim=0).float()
+    actions = actions.reshape(-1, actions.shape[-1])
+    return actions.mean(dim=0), actions.std(dim=0).clamp_min(1e-6)
 
 
 def _build_scheduler(optimizer, training: dict, steps_per_epoch: int):
@@ -142,7 +143,7 @@ def _save_checkpoint(path, model, optimizer, config, epoch, metrics) -> None:
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict(), "config": config,
                 "epoch": epoch, "metrics": metrics,
-                "action_min": config.get("action_min"), "action_max": config.get("action_max")},
+                "action_mean": config.get("action_mean"), "action_std": config.get("action_std")},
                checkpoint)
 
 

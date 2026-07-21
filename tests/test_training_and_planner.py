@@ -49,6 +49,7 @@ def test_cem_planner_shape_and_bounds():
                            data["current_frame"], data["next_frame"])
     assert actions.shape == (2, 3, 2)
     assert torch.all(actions <= 1) and torch.all(actions >= -1)
+    assert {"cem_cost", "cem_action_abs_mean", "cem_action_abs_max", "cem_action_std"} <= set(planner.last_diagnostics)
 
 
 def test_motion_token_training_and_planner():

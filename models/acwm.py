@@ -149,10 +149,10 @@ class AgentCentricWorldModel(nn.Module):
             return self.predictor.denormalize_action(action)
         return action
 
-    def set_action_stats(self, action_min: torch.Tensor, action_max: torch.Tensor) -> None:
+    def set_action_stats(self, action_mean: torch.Tensor, action_std: torch.Tensor) -> None:
         if self.predictor_type == "v3_n1":
             assert self.predictor is not None
-            self.predictor.set_action_stats(action_min, action_max)
+            self.predictor.set_action_stats(action_mean, action_std)
 
     def _action_window(self, action: torch.Tensor, batch: int,
                        history_actions: torch.Tensor | None) -> torch.Tensor:

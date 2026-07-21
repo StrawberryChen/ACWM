@@ -43,19 +43,22 @@ def batch(batch_size=2):
 
 def test_v3_shapes_and_action_normalization():
     model = V3N1GaussianWorldModel(vit_depth=1, action_block=5)
-    model.set_action_stats(torch.zeros(5, 2), torch.full((5, 2), 512.0))
+    model.set_action_stats(torch.tensor([256.0, 128.0]), torch.tensor([128.0, 64.0]))
     latent = model.encode_gaussian(torch.rand(2, 3, 32, 32))
     assert latent.mu.shape == (2, 192)
     assert latent.logvar.shape == (2, 192)
     history = model.encode_gaussian_sequence(torch.rand(2, 3, 3, 32, 32))
     assert history.mu.shape == (2, 3, 192)
     assert history.logvar.shape == (2, 3, 192)
-    raw_block = torch.stack((torch.zeros(5, 2), torch.full((5, 2), 512.0)))
+    raw_block = torch.stack((
+        torch.tensor([[128.0, 64.0]]).expand(5, 2),
+        torch.tensor([[384.0, 192.0]]).expand(5, 2),
+    ))
     action_norm = model.normalize_action(raw_block)
     assert action_norm.shape == (2, 10)
     assert torch.allclose(action_norm[0], torch.full((10,), -1.0))
     assert torch.allclose(action_norm[1], torch.full((10,), 1.0))
-    assert model.denormalize_action(action_norm).shape == (2, 5, 2)
+    assert torch.allclose(model.denormalize_action(action_norm), raw_block)
     pred = model.predict_next(history.mu, torch.rand(2, 5, 2) * 512)
     assert pred.shape == (2, 192)
     delta = pred - history.mu[:, -1]
@@ -65,7 +68,7 @@ def test_v3_shapes_and_action_normalization():
 
 def test_v3_training_backward():
     model = build_model(config())
-    model.set_action_stats(torch.zeros(5, 2), torch.full((5, 2), 512.0))
+    model.set_action_stats(torch.tensor([256.0, 256.0]), torch.tensor([128.0, 128.0]))
     trainer = ACWMTrainer(model, torch.optim.AdamW(model.parameters()),
                           {"prediction": 1.0, "beta_kl": 1e-4, "lambda_sig": 1.0,
                            "lambda_action_consistency": 1.0})
@@ -80,7 +83,7 @@ def test_v3_training_backward():
 
 def test_v3_action_consistency_can_be_disabled():
     model = build_model(config())
-    model.set_action_stats(torch.zeros(5, 2), torch.full((5, 2), 512.0))
+    model.set_action_stats(torch.tensor([256.0, 256.0]), torch.tensor([128.0, 128.0]))
     trainer = ACWMTrainer(model, torch.optim.AdamW(model.parameters()),
                           {"prediction": 1.0, "beta_kl": 1e-4, "lambda_sig": 1.0,
                            "lambda_action_consistency": 0.0})
@@ -118,7 +121,7 @@ def test_v3_world_model_rollout_maintains_history_window(monkeypatch):
 
 def test_v3_action_target_shape_matches_head():
     model = V3N1GaussianWorldModel(vit_depth=1, action_block=5)
-    model.set_action_stats(torch.zeros(5, 2), torch.full((5, 2), 512.0))
+    model.set_action_stats(torch.tensor([256.0, 256.0]), torch.tensor([128.0, 128.0]))
     delta = torch.randn(4, 192)
     action_hat = model.predict_action_from_delta(delta)
     target_action = model.normalize_action(torch.rand(4, 5, 2) * 512)

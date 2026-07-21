@@ -108,6 +108,8 @@ planner:
   population: 300
   elites: 30
   iterations: 30
+  var_scale: 1.0
+  clamp_actions: false
 
 environment:
   env_id: gym_pusht/PushT-v0
@@ -116,8 +118,9 @@ environment:
   observation_width: 224
   observation_height: 224
   max_steps: 50
-  replan_interval: 1
+  replan_interval: 5
   action_block: 5
+  warm_start: true
   success_threshold: 0.95
   seed: 1000
   video_fps: 20

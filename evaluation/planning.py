@@ -153,12 +153,20 @@ class PlanningEvaluator:
         else:
             fixed_goal = None
         successes, rewards, final_rewards, episode_lengths, planning_times, video_paths = 0, [], [], [], [], []
+        planned_abs_means, planned_abs_maxes, planned_stds, planned_costs = [], [], [], []
+        raw_step_norms, raw_action_norms = [], []
         replan_interval = max(1, int(self.config.get("replan_interval", 1)))
         action_block = max(1, int(self.config.get("action_block", 1)))
         raw_action_dim = max(1, self.action_dim // action_block)
+        if replan_interval > self.planner.horizon:
+            raise ValueError(
+                f"replan_interval={replan_interval} cannot exceed planner horizon={self.planner.horizon}"
+            )
         progress = tqdm(range(episodes), desc="Push-T planning", dynamic_ncols=True, leave=True)
         for episode in progress:
             env = self._make_env()
+            next_init: torch.Tensor | None = None
+            previous_env_action: torch.Tensor | None = None
             if dataset_cases is not None:
                 case = dataset_cases[episode]
                 observation, _ = env.reset(options={"reset_to_state": case["start_state"]})
@@ -202,12 +210,28 @@ class PlanningEvaluator:
                         history_actions = (torch.stack(tuple(actions)).unsqueeze(0) if self.history_length > 1
                                            else torch.empty(1, 0, self.action_dim, device=self.device))
                     start_plan = time.perf_counter()
-                    planned = self.planner.plan(model, history_frames, history_actions, current.unsqueeze(0), goal)
+                    planned = self.planner.plan(
+                        model,
+                        history_frames,
+                        history_actions,
+                        current.unsqueeze(0),
+                        goal,
+                        init_action=next_init,
+                    )
                     planning_times.append(time.perf_counter() - start_plan)
+                    diagnostics = getattr(self.planner, "last_diagnostics", {})
+                    if diagnostics:
+                        planned_abs_means.append(float(diagnostics.get("cem_action_abs_mean", 0.0)))
+                        planned_abs_maxes.append(float(diagnostics.get("cem_action_abs_max", 0.0)))
+                        planned_stds.append(float(diagnostics.get("cem_action_std", 0.0)))
+                        planned_costs.append(float(diagnostics.get("cem_cost", 0.0)))
+                    keep_horizon = min(replan_interval, planned.shape[1])
+                    rest = planned[:, keep_horizon:]
+                    next_init = rest.detach() if bool(self.config.get("warm_start", True)) and rest.numel() else None
                     if getattr(model, "predictor_type", None) == "v3_n1" and hasattr(model, "denormalize_planner_action"):
                         # planned block: [action_block * action_dim] normalized.
                         # env queue receives raw single-step actions [action_dim].
-                        for block in planned[0, :replan_interval].unbind(0):
+                        for block in planned[0, :keep_horizon].unbind(0):
                             raw_block = model.denormalize_planner_action(block[None])[0]
                             assert raw_block.ndim == 2 and raw_block.shape[0] == action_block, (
                                 f"expected raw action block [{action_block},A], got {tuple(raw_block.shape)}"
@@ -215,7 +239,7 @@ class PlanningEvaluator:
                             for raw_index, raw_action in enumerate(raw_block.unbind(0)):
                                 action_queue.append((raw_action, block, raw_index == action_block - 1))
                     else:
-                        action_queue.extend((action, None, True) for action in planned[0, :replan_interval].unbind(0))
+                        action_queue.extend((action, None, True) for action in planned[0, :keep_horizon].unbind(0))
                 action, planned_block, block_done = action_queue.popleft()
                 env_action = action if getattr(model, "predictor_type", None) == "v3_n1" else (
                     model.denormalize_planner_action(action[None])[0] if hasattr(model, "denormalize_planner_action") else action
@@ -223,6 +247,10 @@ class PlanningEvaluator:
                 assert env_action.ndim == 1 and env_action.shape[-1] == raw_action_dim, (
                     f"env action must be [{raw_action_dim}], got {tuple(env_action.shape)}"
                 )
+                raw_action_norms.append(float(env_action.norm().item()))
+                if previous_env_action is not None:
+                    raw_step_norms.append(float((env_action - previous_env_action).norm().item()))
+                previous_env_action = env_action.detach().clone()
                 observation, reward, terminated, truncated, info = env.step(env_action.cpu().numpy())
                 episode_reward = max(episode_reward, float(reward))
                 current = self._image(observation)
@@ -265,5 +293,13 @@ class PlanningEvaluator:
             "mean_final_overlap": float(np.mean(final_rewards)),
             "mean_episode_length": float(np.mean(episode_lengths)),
             "mean_planning_time": float(np.mean(planning_times)) if planning_times else 0.0,
+            "mean_cem_cost": float(np.mean(planned_costs)) if planned_costs else 0.0,
+            "mean_planned_action_abs": float(np.mean(planned_abs_means)) if planned_abs_means else 0.0,
+            "max_planned_action_abs": float(np.max(planned_abs_maxes)) if planned_abs_maxes else 0.0,
+            "mean_planned_action_std": float(np.mean(planned_stds)) if planned_stds else 0.0,
+            "mean_raw_action_norm": float(np.mean(raw_action_norms)) if raw_action_norms else 0.0,
+            "mean_raw_action_jump": float(np.mean(raw_step_norms)) if raw_step_norms else 0.0,
+            "max_raw_action_jump": float(np.max(raw_step_norms)) if raw_step_norms else 0.0,
+            "planning_calls": len(planning_times),
             "videos": video_paths,
         }
