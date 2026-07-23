@@ -112,7 +112,7 @@ planner:
   clamp_actions: false
 
 environment:
-  env_id: gym_pusht/PushT-v0
+  env_id: swm/PushT-v1
   eval_from_dataset: true
   goal_offset_steps: 25
   observation_width: 224
@@ -120,6 +120,7 @@ environment:
   max_steps: 50
   replan_interval: 5
   action_block: 5
+  relative_action: true
   warm_start: true
   success_threshold: 0.95
   seed: 1000

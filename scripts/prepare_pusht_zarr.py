@@ -30,6 +30,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config-output", default="configs/colab_acwm_v3_n1.yaml")
     parser.add_argument("--download-dir", default="/content/ACWM/data_src")
     parser.add_argument("--frame-skip", type=int, default=5)
+    parser.add_argument(
+        "--action-mode",
+        choices=("leworld_relative", "absolute"),
+        default="leworld_relative",
+        help=(
+            "leworld_relative converts Diffusion Policy absolute target-point actions "
+            "to swm/PushT-v1 relative actions: (target_xy - agent_xy) / 100."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -74,7 +83,27 @@ def array_from_group(group, names: tuple[str, ...]) -> np.ndarray:
     raise KeyError(f"none of {names} found; available keys: {list(group.keys())}")
 
 
-def save_episodes(zarr_path: Path, root: Path, val_fraction: float, seed: int, frame_skip: int) -> None:
+def _leworld_relative_actions(actions: np.ndarray, states: np.ndarray) -> np.ndarray:
+    """Convert Push-T absolute target-point actions to LeWorld swm/PushT-v1 actions.
+
+    Diffusion Policy Push-T data stores actions as target screen coordinates.
+    stable-worldmodel's swm/PushT-v1 expects relative actions in roughly
+    [-1, 1], then internally applies:
+
+        target_xy = agent_xy + relative_action * 100
+
+    actions: [N,2] absolute target xy or already-relative xy.
+    states:  [N,>=2] with agent xy in states[:, :2].
+    """
+    if np.nanmax(np.abs(actions)) <= 2.0:
+        # Already looks like relative Push-T actions.
+        return actions.astype(np.float32)
+    relative = (actions[:, :2] - states[:, :2]) / 100.0
+    return np.clip(relative, -1.0, 1.0).astype(np.float32)
+
+
+def save_episodes(zarr_path: Path, root: Path, val_fraction: float, seed: int,
+                  frame_skip: int, action_mode: str) -> None:
     try:
         import zarr
     except ImportError as error:
@@ -94,6 +123,8 @@ def save_episodes(zarr_path: Path, root: Path, val_fraction: float, seed: int, f
         frames = np.transpose(frames, (0, 2, 3, 1))
     if len(actions) != len(states) or len(frames) != len(states):
         raise ValueError("zarr action/state/frame arrays must have the same first dimension")
+    if action_mode == "leworld_relative":
+        actions = _leworld_relative_actions(actions, states)
 
     train_dir, val_dir = root / "data/train", root / "data/val"
     if train_dir.exists():
@@ -131,6 +162,7 @@ def save_episodes(zarr_path: Path, root: Path, val_fraction: float, seed: int, f
         start = int(end)
     print(f"Converted {len(episode_ends)} episodes from {zarr_path}")
     print(f"Train episodes: {len(episode_ends) - val_count}; validation episodes: {val_count}")
+    print(f"Action mode: {action_mode}")
 
 
 def main() -> None:
@@ -139,7 +171,7 @@ def main() -> None:
         raise ValueError("val-fraction must be between 0 and 1")
     root = Path(args.output_root)
     zarr_path = ensure_zarr(args)
-    save_episodes(zarr_path, root, args.val_fraction, args.seed, args.frame_skip)
+    save_episodes(zarr_path, root, args.val_fraction, args.seed, args.frame_skip, args.action_mode)
     write_colab_config(args, root)
     print(f"Ready. Train with: python train.py --config {args.config_output}")
 

@@ -94,8 +94,6 @@ def main() -> None:
                 if isinstance(value, (int, float)):
                     metrics[f"planning/{key}"] = value
             metrics["planning/evaluation_episodes"] = validation.get("planning_episodes", 50)
-            for index, video_path in enumerate(result["videos"]):
-                metrics[f"planning/video_{index}"] = logger.video(video_path, config["environment"].get("video_fps", 20))
             if result["success_rate"] > best_success_rate:
                 best_success_rate = result["success_rate"]
                 best_metrics = {key: value for key, value in metrics.items() if isinstance(value, (int, float))}

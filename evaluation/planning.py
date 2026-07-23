@@ -36,7 +36,12 @@ def _resize_image_tensor(image: torch.Tensor, height: int, width: int) -> torch.
 
 
 class PlanningEvaluator:
-    """Closed-loop CEM evaluation in the official gym-pusht environment."""
+    """Closed-loop CEM evaluation in Push-T.
+
+    The default v3 path uses LeWorld's stable-worldmodel environment
+    ``swm/PushT-v1``. Legacy ``gym_pusht/PushT-v0`` remains supported for older
+    experiments.
+    """
 
     def __init__(self, planner, config: dict[str, Any], history_length: int, action_dim: int, device,
                  dataset_paths: list[str] | None = None):
@@ -53,20 +58,42 @@ class PlanningEvaluator:
         image = _image_tensor(observation, self.device)
         return _resize_image_tensor(image, self.observation_height, self.observation_width)
 
+    def _uses_swm_env(self) -> bool:
+        return str(self.config.get("env_id", "")).startswith("swm/PushT")
+
     def _make_env(self):
         try:
             import gymnasium as gym
+        except ImportError as error:
+            raise ImportError("planning validation requires gymnasium") from error
+        env_id = self.config.get("env_id", "swm/PushT-v1")
+        if self._uses_swm_env():
+            try:
+                import stable_worldmodel.envs  # noqa: F401 - registers swm/PushT-v1
+            except ImportError as error:
+                raise ImportError(
+                    "LeWorld-aligned planning requires stable-worldmodel. "
+                    "Install with: pip install 'stable-worldmodel>=0.1.1' pygame opencv-python-headless"
+                ) from error
+            return gym.make(
+                env_id,
+                render_mode="rgb_array",
+                resolution=self.config.get("observation_width", 224),
+                with_target=True,
+                relative=bool(self.config.get("relative_action", True)),
+            )
+        try:
             import gym_pusht  # noqa: F401 - registers gym_pusht/PushT-v0
             import pymunk
         except ImportError as error:
-            raise ImportError("planning validation requires gymnasium and gym-pusht") from error
+            raise ImportError("legacy gym_pusht planning requires gymnasium and gym-pusht") from error
         if not hasattr(pymunk.Space, "add_collision_handler"):
             raise RuntimeError(
                 "gym-pusht 0.1.x is incompatible with Pymunk 7+. "
                 "Install the compatible version with: pip install 'pymunk>=6.6,<7'"
             )
         return gym.make(
-            self.config.get("env_id", "gym_pusht/PushT-v0"),
+            env_id,
             obs_type="pixels",
             render_mode="rgb_array",
             observation_width=self.config.get("observation_width", 96),
@@ -81,18 +108,57 @@ class PlanningEvaluator:
                 raise ImportError("loading environment.goal_image requires Pillow") from error
             return self._image(np.asarray(Image.open(self.config["goal_image"]).convert("RGB"))).unsqueeze(0)
         reset_state = self.config.get("goal_reset_state", [256.0, 256.0, 256.0, 256.0, 0.785398])
-        goal_observation, _ = env.reset(options={"reset_to_state": reset_state})
-        self._set_goal_pose(env, np.asarray(reset_state, dtype=np.float32))
-        return self._image(goal_observation).unsqueeze(0)
+        goal_observation, goal_info = self._reset_env(env, reset_state, reset_state)
+        return self._env_image(env, goal_observation, goal_info).unsqueeze(0)
+
+    def _state_for_env(self, state: np.ndarray) -> np.ndarray:
+        state = np.asarray(state, dtype=np.float32).reshape(-1)
+        if self._uses_swm_env():
+            # swm/PushT-v1 state is [agent_x, agent_y, block_x, block_y, angle, vel_x, vel_y].
+            if state.shape[0] == 5:
+                state = np.concatenate((state, np.zeros(2, dtype=np.float32)))
+            assert state.shape[0] == 7, f"swm/PushT-v1 state must have 5 or 7 dims, got {state.shape[0]}"
+            return state
+        # gym_pusht expects [agent_x, agent_y, block_x, block_y, block_angle].
+        assert state.shape[0] >= 5, f"gym_pusht state must have at least 5 dims, got {state.shape[0]}"
+        return state[:5]
+
+    def _reset_env(self, env, state: np.ndarray, goal_state: np.ndarray | None = None):
+        state = self._state_for_env(state)
+        if self._uses_swm_env():
+            options = {"state": state}
+            if goal_state is not None:
+                options["goal_state"] = self._state_for_env(goal_state)
+            observation, info = env.reset(options=options)
+            if goal_state is not None:
+                self._set_goal_pose(env, self._state_for_env(goal_state))
+            return observation, info
+        observation, info = env.reset(options={"reset_to_state": state})
+        if goal_state is not None:
+            self._set_goal_pose(env, self._state_for_env(goal_state))
+        return observation, info
+
+    def _env_image(self, env, observation: Any, info: dict | None = None) -> torch.Tensor:
+        if self._uses_swm_env():
+            return self._image(env.render())
+        return self._image(observation)
 
     @staticmethod
     def _set_goal_pose(env, goal_state: np.ndarray) -> None:
-        """Set Push-T green goal pose from a dataset state.
+        """Set Push-T goal pose from a dataset state.
 
-        gym-pusht stores state as [agent_x, agent_y, block_x, block_y, block_angle],
-        while env.unwrapped.goal_pose is [block_x, block_y, block_angle].
+        Both Push-T variants store the task goal as the block pose
+        [block_x, block_y, block_angle]. swm/PushT-v1 additionally keeps
+        ``goal_state`` for success computation, so update both when available.
         """
-        env.unwrapped.goal_pose = np.asarray(goal_state[2:5], dtype=np.float32)
+        base = env.unwrapped
+        goal_state = np.asarray(goal_state, dtype=np.float32)
+        if hasattr(base, "_set_goal_state"):
+            base._set_goal_state(goal_state)
+        if hasattr(base, "goal_pose"):
+            base.goal_pose = np.asarray(goal_state[2:5], dtype=np.float32)
+        if hasattr(base, "_goal"):
+            base._goal = base.render()
 
     def _dataset_eval_cases(self, episodes: int) -> list[dict[str, Any]]:
         """LeWorld-style eval cases sampled from validation episodes.
@@ -169,9 +235,8 @@ class PlanningEvaluator:
             previous_env_action: torch.Tensor | None = None
             if dataset_cases is not None:
                 case = dataset_cases[episode]
-                observation, _ = env.reset(options={"reset_to_state": case["start_state"]})
-                self._set_goal_pose(env, case["goal_state"])
-                current = self._image(observation)
+                observation, info = self._reset_env(env, case["start_state"], case["goal_state"])
+                current = self._env_image(env, observation, info)
                 frames = deque([self._image(frame) for frame in case["history_frames"]],
                                maxlen=self.history_length)
                 frames[-1] = current
@@ -183,15 +248,13 @@ class PlanningEvaluator:
                     actions = deque([torch.as_tensor(action, device=self.device).float()
                                      for action in case["history_actions"]],
                                     maxlen=max(self.history_length - 1, 1))
-                goal_observation, _ = env.reset(options={"reset_to_state": case["goal_state"]})
-                self._set_goal_pose(env, case["goal_state"])
-                goal = self._image(goal_observation).unsqueeze(0)
-                observation, _ = env.reset(options={"reset_to_state": case["start_state"]})
-                self._set_goal_pose(env, case["goal_state"])
-                current = self._image(observation)
+                goal_observation, goal_info = self._reset_env(env, case["goal_state"], case["goal_state"])
+                goal = self._env_image(env, goal_observation, goal_info).unsqueeze(0)
+                observation, info = self._reset_env(env, case["start_state"], case["goal_state"])
+                current = self._env_image(env, observation, info)
             else:
                 observation, _ = env.reset(seed=self.config.get("seed", 0) + episode)
-                current = self._image(observation)
+                current = self._env_image(env, observation, None)
                 frames = deque([current.clone() for _ in range(self.history_length)], maxlen=self.history_length)
                 actions = deque([torch.zeros(self.action_dim, device=self.device) for _ in range(self.history_length - 1)],
                                 maxlen=max(self.history_length - 1, 1))
@@ -253,7 +316,7 @@ class PlanningEvaluator:
                 previous_env_action = env_action.detach().clone()
                 observation, reward, terminated, truncated, info = env.step(env_action.cpu().numpy())
                 episode_reward = max(episode_reward, float(reward))
-                current = self._image(observation)
+                current = self._env_image(env, observation, info)
                 if getattr(model, "predictor_type", None) == "v3_n1":
                     # LeWorld action_block alignment: one latent/frame-history step
                     # advances only after action_block raw env actions have executed.
@@ -286,7 +349,7 @@ class PlanningEvaluator:
                 imageio.mimsave(path, video, fps=self.config.get("video_fps", 20))
                 video_paths.append(path)
             env.close()
-        return {
+        result = {
             "success_rate": successes / episodes,
             "mean_max_reward": float(np.mean(rewards)),
             "mean_max_overlap": float(np.mean(rewards)),
@@ -303,3 +366,8 @@ class PlanningEvaluator:
             "planning_calls": len(planning_times),
             "videos": video_paths,
         }
+        if self._uses_swm_env():
+            # swm/PushT-v1 reward is -state_distance, not overlap.
+            result["mean_best_goal_distance"] = float(-np.mean(rewards))
+            result["mean_final_goal_distance"] = float(-np.mean(final_rewards))
+        return result
