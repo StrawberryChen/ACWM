@@ -80,7 +80,7 @@ class V3N1TemporalEncoder(nn.Module):
         )
         self.transformer = nn.TransformerEncoder(layer, num_layers=num_layers)
 
-    def forward(self, frame_latents: torch.Tensor, action_latents: torch.Tensor) -> torch.Tensor:
+    def encode_tokens(self, frame_latents: torch.Tensor, action_latents: torch.Tensor) -> torch.Tensor:
         assert frame_latents.ndim == 3, (
             f"frame_latents must be [B,T,{self.latent_dim}], got {tuple(frame_latents.shape)}"
         )
@@ -102,7 +102,11 @@ class V3N1TemporalEncoder(nn.Module):
         # causal_mask: [T,T], token i can attend only to tokens <= i.
         causal_mask = torch.triu(torch.ones(steps, steps, device=frame_latents.device, dtype=torch.bool), diagonal=1)
         # encoded: [B,T,192]
-        encoded = self.transformer(tokens, mask=causal_mask)
+        return self.transformer(tokens, mask=causal_mask)
+
+    def forward(self, frame_latents: torch.Tensor, action_latents: torch.Tensor) -> torch.Tensor:
+        # encoded: [B,T,192]
+        encoded = self.encode_tokens(frame_latents, action_latents)
         # h_t: [B,192]
         return encoded[:, -1]
 
@@ -334,6 +338,46 @@ class V3N1GaussianWorldModel(nn.Module):
         delta_pred = self.dynamics_predictor(predictor_input)
         # mu_pred_next: [B,192] residual prediction around current frame latent.
         return z_current + delta_pred
+
+    def predict_next_sequence(self, frame_latents: torch.Tensor, history_actions: torch.Tensor,
+                              current_action: torch.Tensor,
+                              action_is_normalized: bool = False) -> torch.Tensor:
+        """LeWorld-style multi-position one-step prediction over a real latent window.
+
+        frame_latents:    [B,T,192] real encoded latents [z0,z1,z2]
+        history_actions:  [B,T-1,action_block,2] raw actions [a0,a1], or normalized [B,T-1,10]
+        current_action:   [B,action_block,2] raw action a2, or normalized [B,10]
+        returns:          [B,T,192] predictions [z1_hat,z2_hat,z3_hat]
+        """
+        assert frame_latents.ndim == 3, (
+            f"frame_latents must be [B,T,{self.latent_dim}], got {tuple(frame_latents.shape)}"
+        )
+        assert frame_latents.shape[1] == self.history_size, (
+            f"LeWorld-style v3 prediction expects T={self.history_size}, got {frame_latents.shape[1]}"
+        )
+        assert frame_latents.shape[-1] == self.latent_dim, (
+            f"frame latent dim must be {self.latent_dim}, got {frame_latents.shape[-1]}"
+        )
+        # action_seq: [B,T,action_block*2], aligned as [a0,a1,a2].
+        action_seq = self.action_sequence(history_actions, current_action, action_is_normalized)
+        assert action_seq.shape[:2] == frame_latents.shape[:2], (
+            f"action_seq [B,T] {tuple(action_seq.shape[:2])} must match frame_latents "
+            f"{tuple(frame_latents.shape[:2])}"
+        )
+        # e_action_seq: [B,T,192]
+        e_action_seq = self.action_encoder(action_seq.flatten(0, 1)).view(
+            action_seq.shape[0], action_seq.shape[1], self.latent_dim
+        )
+        # h_seq: [B,T,192], token i only sees tokens <= i.
+        h_seq = self.temporal_encoder.encode_tokens(frame_latents, e_action_seq)
+        # predictor_input: [B,T,576] = concat(h_i, e_a_i, interaction).
+        predictor_input = torch.cat((h_seq, e_action_seq, h_seq * e_action_seq), dim=-1)
+        # delta_pred: [B,T,192]
+        delta_pred = self.dynamics_predictor(predictor_input.flatten(0, 1)).view(
+            frame_latents.shape[0], frame_latents.shape[1], self.latent_dim
+        )
+        # z_pred_next_seq: [B,T,192] = [z1_hat,z2_hat,z3_hat].
+        return frame_latents + delta_pred
 
     def predict_action_from_delta(self, delta_pred: torch.Tensor) -> torch.Tensor:
         assert delta_pred.ndim == 2, f"delta_pred must be [B,{self.latent_dim}], got {tuple(delta_pred.shape)}"

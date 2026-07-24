@@ -111,6 +111,28 @@ class AgentCentricWorldModel(nn.Module):
             and self.predictor is not None
             and actions.shape[-1] == self.predictor.action_dim
         )
+        if self.predictor_type == "v3_n1":
+            assert self.predictor is not None, "v3_n1 predictor is required"
+            if v3_actions_are_normalized:
+                # CEM/planning path: actions are normalized flattened blocks [B,H,5*2]=[B,H,10].
+                assert actions.ndim == 3 and actions.shape[-1] == self.predictor.action_dim, (
+                    f"normalized v3 actions must be [B,H,{self.predictor.action_dim}], "
+                    f"got {tuple(actions.shape)}"
+                )
+                if history_actions is not None:
+                    assert history_actions.ndim == 3 and history_actions.shape[-1] == self.predictor.action_dim, (
+                        f"normalized v3 history_actions must be [B,T-1,{self.predictor.action_dim}], "
+                        f"got {tuple(history_actions.shape)}"
+                    )
+            else:
+                # Dataset/training rollout path: actions are raw action blocks [B,H,5,2].
+                assert actions.ndim == 4, (
+                    f"raw v3 actions must be [B,H,action_block,raw_action_dim], got {tuple(actions.shape)}"
+                )
+                assert tuple(actions.shape[2:]) == (self.predictor.action_block, self.predictor.raw_action_dim), (
+                    f"raw v3 actions must end with "
+                    f"[{self.predictor.action_block},{self.predictor.raw_action_dim}], got {tuple(actions.shape)}"
+                )
         predictions = []
         for action in actions.unbind(dim=1):
             if self.predictor_type == "motion_token":

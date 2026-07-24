@@ -114,6 +114,9 @@ planner:
 environment:
   env_id: swm/PushT-v1
   eval_from_dataset: true
+  # LeWorld evaluates Push-T planning from expert-train dataset start/goal states.
+  # Use "val" only when you explicitly want held-out planning cases.
+  planning_dataset: train
   goal_offset_steps: 25
   observation_width: 224
   observation_height: 224

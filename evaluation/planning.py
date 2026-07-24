@@ -161,7 +161,7 @@ class PlanningEvaluator:
             base._goal = base.render()
 
     def _dataset_eval_cases(self, episodes: int) -> list[dict[str, Any]]:
-        """LeWorld-style eval cases sampled from validation episodes.
+        """LeWorld-style eval cases sampled from configured dataset episodes.
 
         Each case starts from a dataset simulator state and uses the same
         episode's state at +goal_offset_steps as the goal.
@@ -171,9 +171,9 @@ class PlanningEvaluator:
             matches = sorted(glob.glob(str(pattern)))
             paths.extend(matches if matches else [str(pattern)])
         if not paths:
-            raise ValueError("LeWorld dataset-goal planning requires validation dataset paths")
+            raise ValueError("LeWorld dataset-goal planning requires dataset paths")
         goal_offset = int(self.config.get("goal_offset_steps", 25))
-        cases: list[dict[str, Any]] = []
+        candidates: list[tuple[str, int]] = []
         for path in paths:
             with np.load(path) as data:
                 if "states" not in data:
@@ -187,6 +187,22 @@ class PlanningEvaluator:
                 if len(states) != len(frames) or len(actions) != len(frames) - 1:
                     raise ValueError(f"{path} has inconsistent frames/actions/states lengths")
                 for current in range(self.history_length - 1, len(frames) - goal_offset):
+                    candidates.append((path, current))
+        if len(candidates) < episodes:
+            raise ValueError(
+                f"requested {episodes} planning episodes, but only {len(candidates)} valid dataset starts exist"
+            )
+        rng = np.random.default_rng(int(self.config.get("seed", 0)))
+        indices = rng.choice(len(candidates), size=episodes, replace=False)
+        cases: list[dict[str, Any]] = []
+        for index in indices:
+            path, current = candidates[int(index)]
+            with np.load(path) as data:
+                frames = data["frames"]
+                actions = data["actions"]
+                states = data["states"].astype(np.float32)
+                if len(states) != len(frames) or len(actions) != len(frames) - 1:
+                    raise ValueError(f"{path} has inconsistent frames/actions/states lengths")
                     start = current - self.history_length + 1
                     cases.append({
                         "path": path,
@@ -196,11 +212,7 @@ class PlanningEvaluator:
                         "start_state": states[current],
                         "goal_state": states[current + goal_offset],
                     })
-        if len(cases) < episodes:
-            raise ValueError(f"requested {episodes} planning episodes, but only {len(cases)} valid dataset starts exist")
-        rng = np.random.default_rng(int(self.config.get("seed", 0)))
-        indices = rng.choice(len(cases), size=episodes, replace=False)
-        return [cases[int(index)] for index in indices]
+        return cases
 
     @torch.no_grad()
     def evaluate(self, model, episodes: int = 100, video_dir: str | Path | None = None,
@@ -223,6 +235,10 @@ class PlanningEvaluator:
         raw_step_norms, raw_action_norms = [], []
         replan_interval = max(1, int(self.config.get("replan_interval", 1)))
         action_block = max(1, int(self.config.get("action_block", 1)))
+        if self.action_dim % action_block != 0:
+            raise ValueError(
+                f"planner action_dim={self.action_dim} must be divisible by action_block={action_block}"
+            )
         raw_action_dim = max(1, self.action_dim // action_block)
         if replan_interval > self.planner.horizon:
             raise ValueError(
@@ -243,6 +259,11 @@ class PlanningEvaluator:
                 if getattr(model, "predictor_type", None) == "v3_n1":
                     raw_history_actions = torch.as_tensor(case["history_actions"], device=self.device).float().unsqueeze(0)
                     normalized_history_actions = model.predictor.normalize_action_sequence(raw_history_actions)[0]
+                    assert normalized_history_actions.shape == (self.history_length - 1, self.action_dim), (
+                        f"v3_n1 planning history_actions must be normalized flattened "
+                        f"[{self.history_length - 1},{self.action_dim}], got "
+                        f"{tuple(normalized_history_actions.shape)}"
+                    )
                     actions = deque(normalized_history_actions.unbind(0), maxlen=max(self.history_length - 1, 1))
                 else:
                     actions = deque([torch.as_tensor(action, device=self.device).float()
@@ -260,7 +281,11 @@ class PlanningEvaluator:
                                 maxlen=max(self.history_length - 1, 1))
                 goal = fixed_goal
             video = [env.render()] if episode < videos_to_save else []
-            episode_reward, succeeded = 0.0, False
+            # gym_pusht reward is overlap in [0,1], but swm/PushT-v1 reward is
+            # negative goal distance. Initialize from -inf for swm so "best"
+            # reward can actually become the least-negative distance.
+            episode_reward = float("-inf") if self._uses_swm_env() else 0.0
+            succeeded = False
             action_queue: deque[tuple[torch.Tensor, torch.Tensor | None, bool]] = deque()
             for step in range(self.config.get("max_steps", 300)):
                 if not action_queue:
@@ -281,6 +306,9 @@ class PlanningEvaluator:
                         goal,
                         init_action=next_init,
                     )
+                    assert planned.ndim == 3 and planned.shape[-1] == self.action_dim, (
+                        f"planner must return [B,H,{self.action_dim}] action blocks, got {tuple(planned.shape)}"
+                    )
                     planning_times.append(time.perf_counter() - start_plan)
                     diagnostics = getattr(self.planner, "last_diagnostics", {})
                     if diagnostics:
@@ -292,12 +320,17 @@ class PlanningEvaluator:
                     rest = planned[:, keep_horizon:]
                     next_init = rest.detach() if bool(self.config.get("warm_start", True)) and rest.numel() else None
                     if getattr(model, "predictor_type", None) == "v3_n1" and hasattr(model, "denormalize_planner_action"):
-                        # planned block: [action_block * action_dim] normalized.
-                        # env queue receives raw single-step actions [action_dim].
+                        # planned block: [action_block * raw_action_dim] normalized and flattened.
+                        # With LeWorld-aligned Push-T this is [5*2]=[10].
+                        # Env queue receives raw single-step actions [raw_action_dim]=[2].
                         for block in planned[0, :keep_horizon].unbind(0):
                             raw_block = model.denormalize_planner_action(block[None])[0]
                             assert raw_block.ndim == 2 and raw_block.shape[0] == action_block, (
                                 f"expected raw action block [{action_block},A], got {tuple(raw_block.shape)}"
+                            )
+                            assert raw_block.shape[1] == raw_action_dim, (
+                                f"expected raw action block [{action_block},{raw_action_dim}], "
+                                f"got {tuple(raw_block.shape)}"
                             )
                             for raw_index, raw_action in enumerate(raw_block.unbind(0)):
                                 action_queue.append((raw_action, block, raw_index == action_block - 1))

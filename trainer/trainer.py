@@ -38,20 +38,66 @@ class ACWMTrainer:
     def compute_one_step(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         batch = self._move(batch)
         if getattr(self.model, "predictor_type", "adaln") == "v3_n1":
-            # history_frames: [B,T,3,H,W], current action raw: [B,2], next_frame: [B,3,H,W].
+            assert self.model.predictor is not None, "v3_n1 predictor is required"
+            predictor = self.model.predictor
+            # history_frames: [B,T,3,H,W], history_actions: [B,T-1,action_block,raw_action_dim].
+            # current_action: [B,action_block,raw_action_dim], next_frame: [B,3,H,W].
+            # With the LeWorld-aligned Push-T setting this is current_action=[B,5,2],
+            # which is normalized and flattened inside the predictor to [B,10].
+            expected_history_action_shape = (
+                predictor.history_size - 1,
+                predictor.action_block,
+                predictor.raw_action_dim,
+            )
+            expected_current_action_shape = (predictor.action_block, predictor.raw_action_dim)
+            assert batch["history_actions"].ndim == 4, (
+                f"history_actions must be [B,T-1,action_block,raw_action_dim], "
+                f"got {tuple(batch['history_actions'].shape)}"
+            )
+            assert tuple(batch["history_actions"].shape[1:]) == expected_history_action_shape, (
+                f"history_actions must be [B,{expected_history_action_shape[0]},"
+                f"{expected_history_action_shape[1]},{expected_history_action_shape[2]}], "
+                f"got {tuple(batch['history_actions'].shape)}"
+            )
+            assert batch["current_action"].ndim == 3, (
+                f"current_action must be [B,action_block,raw_action_dim], "
+                f"got {tuple(batch['current_action'].shape)}"
+            )
+            assert tuple(batch["current_action"].shape[1:]) == expected_current_action_shape, (
+                f"current_action must be [B,{expected_current_action_shape[0]},"
+                f"{expected_current_action_shape[1]}], got {tuple(batch['current_action'].shape)}"
+            )
             history = self.model.predictor.encode_gaussian_sequence(batch["history_frames"])
             # current.mu/logvar: [B,192] = z_t posterior params.
             current = type(history)(history.mu[:, -1], history.logvar[:, -1])
             target = self.model.predictor.encode_gaussian(batch["next_frame"])
-            # mu_pred_next: [B,192]
-            prediction = self.model.step(history.mu, current.mu, batch["current_action"], batch["history_actions"])
-            pred_loss = self.environment_loss(prediction.environment, target.mu)
+            # LeWorld-style multi-position one-step supervision:
+            # pred_sequence:   [B,T,192] = [z_{t-1}_hat, z_t_hat, z_{t+1}_hat]
+            # target_sequence: [B,T,192] = [z_{t-1},     z_t,     z_{t+1}]
+            pred_sequence = self.model.predictor.predict_next_sequence(
+                history.mu,
+                batch["history_actions"],
+                batch["current_action"],
+            )
+            target_sequence = torch.cat((history.mu[:, 1:], target.mu[:, None]), dim=1)
+            assert pred_sequence.shape == target_sequence.shape, (
+                f"pred_sequence shape {tuple(pred_sequence.shape)} must match target_sequence "
+                f"{tuple(target_sequence.shape)}"
+            )
+            pred_loss_per_step = (pred_sequence - target_sequence).square().mean(dim=(0, 2))
+            pred_loss = pred_loss_per_step.mean()
+            # final_pred: [B,192] = z_{t+1}_hat, used by existing v3 diagnostics.
+            final_pred = pred_sequence[:, -1]
             # delta_pred: [B,192] = predicted latent displacement from the forward predictor.
-            delta_pred = prediction.environment - current.mu
-            # action_hat: [B,action_dim], target_action: [B,action_dim] in [-1,1].
+            delta_pred = final_pred - current.mu
+            # action_hat/target_action: [B,action_block*raw_action_dim] z-scored flattened action block.
             action_hat = self.model.predictor.predict_action_from_delta(delta_pred)
             target_action = self.model.predictor.normalize_action(batch["current_action"]).detach()
             assert target_action.ndim == 2, f"target_action must be [B,A], got {tuple(target_action.shape)}"
+            assert target_action.shape[-1] == predictor.action_dim, (
+                f"target_action last dim must be flattened action block {predictor.action_dim}, "
+                f"got {target_action.shape[-1]}"
+            )
             assert target_action.shape == action_hat.shape, (
                 f"action_hat shape {tuple(action_hat.shape)} must match target_action {tuple(target_action.shape)}"
             )
@@ -71,11 +117,14 @@ class ACWMTrainer:
             shuffled = self.model.step(history.mu, current.mu, batch["current_action"][permutation],
                                        batch["history_actions"]).environment
             shuffle_mse = self.environment_loss(shuffled, target.mu)
-            normal_mse = pred_loss
+            normal_mse = pred_loss_per_step[-1]
             metrics = {
                 "loss": total,
                 "loss_total": total,
                 "loss_pred": pred_loss,
+                "loss_pred_step_1": pred_loss_per_step[0],
+                "loss_pred_step_2": pred_loss_per_step[1],
+                "loss_pred_step_3": pred_loss_per_step[2],
                 "loss_kl": kl_loss,
                 "loss_kl_history": kl_history,
                 "loss_kl_current": kl_current,
@@ -88,7 +137,7 @@ class ACWMTrainer:
                 "mu_current_std_mean": current.mu.std(dim=0).mean(),
                 "mu_next_std_mean": target.mu.std(dim=0).mean(),
                 "mu_combined_std_mean": sig_input.std(dim=0).mean(),
-                "mu_pred_std_mean": prediction.environment.std(dim=0).mean(),
+                "mu_pred_std_mean": final_pred.std(dim=0).mean(),
                 "delta_pred_norm": delta_pred.norm(dim=-1).mean(),
                 "delta_pred_std_mean": delta_pred.std(dim=0).mean(),
                 "logvar_current_mean": current.logvar.mean(),

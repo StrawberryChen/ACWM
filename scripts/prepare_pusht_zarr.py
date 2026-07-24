@@ -151,8 +151,12 @@ def save_episodes(zarr_path: Path, root: Path, val_fraction: float, seed: int,
         # frames[k] -> frames[k+1] spans frame_skip raw env timesteps, supervised by
         # the full consecutive action block actions[indices[k]:indices[k+1]].
         action_blocks = np.stack([actions[indices[i]:indices[i + 1]] for i in range(len(indices) - 1)])
-        if action_blocks.shape[1] != frame_skip:
-            raise ValueError(f"expected action blocks of length {frame_skip}, got {action_blocks.shape}")
+        expected_action_block_shape = (frame_skip, 2)
+        if action_blocks.ndim != 3 or tuple(action_blocks.shape[1:]) != expected_action_block_shape:
+            raise ValueError(
+                f"expected action blocks [N,{expected_action_block_shape[0]},"
+                f"{expected_action_block_shape[1]}], got {action_blocks.shape}"
+            )
         np.savez_compressed(
             out_dir / f"episode_{episode:06d}.npz",
             frames=frames[indices],

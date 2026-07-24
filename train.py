@@ -63,9 +63,17 @@ def main() -> None:
                           training.get("sigreg"), training.get("amp", False),
                           training.get("gradient_clip_norm"), scheduler)
     planner = CEMPlanner(**config["planner"])
+    planning_dataset_source = config["environment"].get("planning_dataset", "train")
+    if planning_dataset_source == "train":
+        planning_dataset_paths = train_paths
+    elif planning_dataset_source == "val":
+        planning_dataset_paths = val_paths
+    else:
+        raise ValueError("environment.planning_dataset must be 'train' or 'val'")
+    print(f"Planning evaluation dataset source: {planning_dataset_source} ({len(planning_dataset_paths)} path patterns)")
     planning_evaluator = PlanningEvaluator(planner, config["environment"], data_config["history_length"],
                                            config["planner"]["action_dim"], config.get("device", "cpu"),
-                                           dataset_paths=val_paths)
+                                           dataset_paths=planning_dataset_paths)
     logger = ExperimentLogger(config.get("wandb", {"enabled": False}), config)
     validation = config["validation"]
     best_success_rate = -1.0
