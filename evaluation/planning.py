@@ -203,15 +203,16 @@ class PlanningEvaluator:
                 states = data["states"].astype(np.float32)
                 if len(states) != len(frames) or len(actions) != len(frames) - 1:
                     raise ValueError(f"{path} has inconsistent frames/actions/states lengths")
-                    start = current - self.history_length + 1
-                    cases.append({
-                        "path": path,
-                        "current": current,
-                        "history_frames": frames[start: current + 1],
-                        "history_actions": actions[start:current].astype(np.float32),
-                        "start_state": states[current],
-                        "goal_state": states[current + goal_offset],
-                    })
+                start = current - self.history_length + 1
+                cases.append({
+                    "path": path,
+                    "current": current,
+                    "history_frames": frames[start: current + 1],
+                    "history_actions": actions[start:current].astype(np.float32),
+                    "start_state": states[current],
+                    "goal_state": states[current + goal_offset],
+                })
+        assert len(cases) == episodes, f"expected {episodes} planning cases, got {len(cases)}"
         return cases
 
     @torch.no_grad()
