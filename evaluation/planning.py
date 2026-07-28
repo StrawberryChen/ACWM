@@ -232,6 +232,7 @@ class PlanningEvaluator:
         else:
             fixed_goal = None
         successes, rewards, final_rewards, episode_lengths, planning_times, video_paths = 0, [], [], [], [], []
+        episode_successes: list[bool] = []
         planned_abs_means, planned_abs_maxes, planned_stds, planned_costs = [], [], [], []
         raw_step_norms, raw_action_norms = [], []
         replan_interval = max(1, int(self.config.get("replan_interval", 1)))
@@ -371,12 +372,13 @@ class PlanningEvaluator:
                                          successes=f"{successes}/{episode}", reward=f"{episode_reward:.3f}")
                 if terminated or truncated:
                     break
+            episode_successes.append(bool(succeeded))
             successes += int(succeeded)
             rewards.append(episode_reward)
             final_rewards.append(float(reward))
             episode_lengths.append(step + 1)
             progress.set_postfix(successes=f"{successes}/{episode + 1}",
-                                 success_rate=f"{successes / (episode + 1):.1%}")
+                                 success_rate=f"{successes / (episode + 1) * 100.0:.1f}")
             if video:
                 path = Path(video_dir or "outputs/videos") / f"planning_episode_{episode:03d}.mp4"
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -384,24 +386,31 @@ class PlanningEvaluator:
                 video_paths.append(path)
             env.close()
         result = {
-            "success_rate": successes / episodes,
-            "mean_max_reward": float(np.mean(rewards)),
-            "mean_max_overlap": float(np.mean(rewards)),
-            "mean_final_overlap": float(np.mean(final_rewards)),
-            "mean_episode_length": float(np.mean(episode_lengths)),
-            "mean_planning_time": float(np.mean(planning_times)) if planning_times else 0.0,
-            "mean_cem_cost": float(np.mean(planned_costs)) if planned_costs else 0.0,
-            "mean_planned_action_abs": float(np.mean(planned_abs_means)) if planned_abs_means else 0.0,
-            "max_planned_action_abs": float(np.max(planned_abs_maxes)) if planned_abs_maxes else 0.0,
-            "mean_planned_action_std": float(np.mean(planned_stds)) if planned_stds else 0.0,
-            "mean_raw_action_norm": float(np.mean(raw_action_norms)) if raw_action_norms else 0.0,
-            "mean_raw_action_jump": float(np.mean(raw_step_norms)) if raw_step_norms else 0.0,
-            "max_raw_action_jump": float(np.max(raw_step_norms)) if raw_step_norms else 0.0,
-            "planning_calls": len(planning_times),
+            # LeWorld-compatible evaluation metric: percent in [0, 100].
+            "success_rate": successes / episodes * 100.0,
+            "episode_successes": episode_successes,
             "videos": video_paths,
+        }
+        diagnostics = {
+            "diagnostics/mean_max_reward": float(np.mean(rewards)),
+            "diagnostics/mean_final_reward": float(np.mean(final_rewards)),
+            "diagnostics/mean_episode_length": float(np.mean(episode_lengths)),
+            "diagnostics/mean_planning_time": float(np.mean(planning_times)) if planning_times else 0.0,
+            "diagnostics/mean_cem_cost": float(np.mean(planned_costs)) if planned_costs else 0.0,
+            "diagnostics/mean_planned_action_abs": float(np.mean(planned_abs_means)) if planned_abs_means else 0.0,
+            "diagnostics/max_planned_action_abs": float(np.max(planned_abs_maxes)) if planned_abs_maxes else 0.0,
+            "diagnostics/mean_planned_action_std": float(np.mean(planned_stds)) if planned_stds else 0.0,
+            "diagnostics/mean_raw_action_norm": float(np.mean(raw_action_norms)) if raw_action_norms else 0.0,
+            "diagnostics/mean_raw_action_jump": float(np.mean(raw_step_norms)) if raw_step_norms else 0.0,
+            "diagnostics/max_raw_action_jump": float(np.max(raw_step_norms)) if raw_step_norms else 0.0,
+            "diagnostics/planning_calls": len(planning_times),
         }
         if self._uses_swm_env():
             # swm/PushT-v1 reward is -state_distance, not overlap.
-            result["mean_best_goal_distance"] = float(-np.mean(rewards))
-            result["mean_final_goal_distance"] = float(-np.mean(final_rewards))
+            diagnostics["diagnostics/mean_best_goal_distance"] = float(-np.mean(rewards))
+            diagnostics["diagnostics/mean_final_goal_distance"] = float(-np.mean(final_rewards))
+        else:
+            diagnostics["diagnostics/mean_max_overlap"] = float(np.mean(rewards))
+            diagnostics["diagnostics/mean_final_overlap"] = float(np.mean(final_rewards))
+        result.update(diagnostics)
         return result
