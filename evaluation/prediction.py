@@ -64,7 +64,7 @@ def save_prediction_animation(trainer, loader, path: str | Path, max_samples: in
         agent, environment = trainer.model.encode(batch["history_frames"], batch["history_actions"], batch["current_frame"])
         prediction = trainer.model.step(agent, environment, batch["current_action"], batch["history_actions"])
         target_environment = trainer.model.encode_goal(batch["next_frame"]) if hasattr(trainer.model, "encode_goal") else trainer.model.environment_encoder(batch["next_frame"])
-        if getattr(trainer.model, "predictor_type", "adaln") in {"motion_token", "forward_inverse", "v3_n1"}:
+        if getattr(trainer.model, "predictor_type", "adaln") in {"motion_token", "forward_inverse", "v3_n1", "acwm_v4"}:
             agent_error = None
         else:
             target_agent = trainer.model.agent_encoder(batch["next_history_frames"], batch["next_history_actions"])
