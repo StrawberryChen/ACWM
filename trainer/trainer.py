@@ -155,6 +155,112 @@ class ACWMTrainer:
             metrics.update(sig_metrics)
             return metrics
 
+        if getattr(self.model, "predictor_type", "adaln") == "acwm_v4":
+            assert self.model.predictor is not None, "acwm_v4 predictor is required"
+            predictor = self.model.predictor
+            # history_frames:   [B,T,3,H,W]
+            # history_actions:  [B,T-1,action_block,raw_action_dim]
+            # current_action:   [B,action_block,raw_action_dim]
+            # next_frame:       [B,3,H,W]
+            expected_history_action_shape = (
+                predictor.history_size - 1,
+                predictor.action_block,
+                predictor.raw_action_dim,
+            )
+            expected_current_action_shape = (predictor.action_block, predictor.raw_action_dim)
+            assert batch["history_actions"].ndim == 4, (
+                f"history_actions must be [B,T-1,action_block,raw_action_dim], "
+                f"got {tuple(batch['history_actions'].shape)}"
+            )
+            assert tuple(batch["history_actions"].shape[1:]) == expected_history_action_shape, (
+                f"history_actions must be [B,{expected_history_action_shape[0]},"
+                f"{expected_history_action_shape[1]},{expected_history_action_shape[2]}], "
+                f"got {tuple(batch['history_actions'].shape)}"
+            )
+            assert batch["current_action"].ndim == 3, (
+                f"current_action must be [B,action_block,raw_action_dim], "
+                f"got {tuple(batch['current_action'].shape)}"
+            )
+            assert tuple(batch["current_action"].shape[1:]) == expected_current_action_shape, (
+                f"current_action must be [B,{expected_current_action_shape[0]},"
+                f"{expected_current_action_shape[1]}], got {tuple(batch['current_action'].shape)}"
+            )
+
+            # history_latents: [B,T,192] = [z_{t-2}, z_{t-1}, z_t]
+            history_latents = predictor.encode_sequence(batch["history_frames"])
+            # target_next: [B,192] = z_{t+1}
+            target_next = predictor.encode(batch["next_frame"])
+            # pred_sequence: [B,T,192] = [z_{t-1}_hat, z_t_hat, z_{t+1}_hat]
+            pred_sequence = predictor.predict_next_sequence(
+                history_latents,
+                batch["history_actions"],
+                batch["current_action"],
+            )
+            # target_sequence: [B,T,192] = [z_{t-1}, z_t, z_{t+1}]
+            target_sequence = torch.cat((history_latents[:, 1:], target_next[:, None]), dim=1)
+            assert pred_sequence.shape == target_sequence.shape, (
+                f"pred_sequence shape {tuple(pred_sequence.shape)} must match target_sequence "
+                f"{tuple(target_sequence.shape)}"
+            )
+            pred_loss_per_step = (pred_sequence - target_sequence).square().mean(dim=(0, 2))
+            pred_loss = pred_loss_per_step.mean()
+            final_pred = pred_sequence[:, -1]
+            delta_pred = final_pred - history_latents[:, -1]
+
+            real_latents = torch.cat((history_latents, target_next[:, None]), dim=1)
+            # sigreg_embeddings: [T+1,B,192], only real encoder latents are regularized.
+            sigreg_embeddings = real_latents.transpose(0, 1)
+            sigreg = self.sigreg_loss(sigreg_embeddings)
+
+            terminal_loss = torch.zeros((), device=self.device)
+            terminal_steps = torch.zeros((), device=self.device)
+            if "rollout_actions" in batch and self.weights.get("terminal", 0.0) > 0:
+                # rollout_actions: [B,L,action_block,raw_action_dim]
+                predictions = self.model.rollout(
+                    history_latents,
+                    history_latents[:, -1],
+                    batch["rollout_actions"],
+                    batch["history_actions"],
+                )
+                # target_terminal: [B,192] = E(frame_{t+L})
+                target_terminal = predictor.encode(batch["rollout_frames"][:, -1])
+                terminal_loss = self.environment_loss(predictions[-1].environment, target_terminal)
+                terminal_steps = torch.tensor(float(batch["rollout_actions"].shape[1]), device=self.device)
+                real_latents = torch.cat((real_latents, target_terminal[:, None]), dim=1)
+
+            total = (self.weights.get("prediction", 1.0) * pred_loss
+                     + self.weights.get("terminal", 0.0) * terminal_loss
+                     + self.weights.get("sigreg", self.weights.get("lambda_sig", 0.09)) * sigreg)
+            shuffled = self.model.step(
+                history_latents,
+                history_latents[:, -1],
+                batch["current_action"][torch.randperm(batch["current_action"].shape[0], device=self.device)],
+                batch["history_actions"],
+            ).environment
+            shuffle_mse = self.environment_loss(shuffled, target_next)
+            normal_mse = pred_loss_per_step[-1]
+            return {
+                "loss": total,
+                "loss_total": total,
+                "loss_pred": pred_loss,
+                "loss_pred_step_1": pred_loss_per_step[0],
+                "loss_pred_step_2": pred_loss_per_step[1],
+                "loss_pred_step_3": pred_loss_per_step[2],
+                "loss_terminal": terminal_loss,
+                "terminal_steps": terminal_steps,
+                "loss_sigreg": sigreg,
+                "latent_mean_abs": real_latents.mean(dim=(0, 1)).abs().mean(),
+                "latent_std_mean": real_latents.std(dim=(0, 1)).mean(),
+                "latent_std_min": real_latents.std(dim=(0, 1)).min(),
+                "latent_std_max": real_latents.std(dim=(0, 1)).max(),
+                "pred_latent_std_mean": final_pred.std(dim=0).mean(),
+                "delta_pred_norm": delta_pred.norm(dim=-1).mean(),
+                "delta_pred_std_mean": delta_pred.std(dim=0).mean(),
+                "action_shuffle_mse_normal": normal_mse,
+                "action_shuffle_mse_shuffle": shuffle_mse,
+                "action_sensitivity": shuffle_mse - normal_mse,
+            }
+
         agent, environment = self.model.encode(batch["history_frames"], batch["history_actions"], batch["current_frame"])
         target_environment = self.model.environment_encoder(batch["next_frame"])
         if getattr(self.model, "predictor_type", "adaln") == "forward_inverse":

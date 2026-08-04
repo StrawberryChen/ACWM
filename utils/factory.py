@@ -1,6 +1,7 @@
 from typing import Any
 
 from models import AgentCentricWorldModel
+from models.acwm_v4 import ACWMV4ResidualWorldModel
 from models.encoder import CNNEnvironmentEncoder, GRUAgentEncoder, GRUViTAgentEncoder, ViTEnvironmentEncoder
 from models.forward_inverse_predictor import ForwardInversePredictor
 from models.predictor import AgentTransition, EnvironmentTransition, MotionTokenPredictor
@@ -21,6 +22,7 @@ ENVIRONMENT_TRANSITIONS.register("mlp", EnvironmentTransition)
 PREDICTORS.register("motion_token", MotionTokenPredictor)
 PREDICTORS.register("forward_inverse", ForwardInversePredictor)
 PREDICTORS.register("v3_n1", V3N1GaussianWorldModel)
+PREDICTORS.register("acwm_v4", ACWMV4ResidualWorldModel)
 
 
 def build_model(config: dict[str, Any]) -> AgentCentricWorldModel:
@@ -30,14 +32,20 @@ def build_model(config: dict[str, Any]) -> AgentCentricWorldModel:
     predictor_type = predictor_config.pop("type", None)
     if version is None:
         version = {"adaln": "leworld", "motion_token": "motion_token",
-                   "forward_inverse": "forward_inverse", "v3_n1": "v3_n1"}.get(predictor_type or "adaln")
+                   "forward_inverse": "forward_inverse", "v3_n1": "v3_n1",
+                   "acwm_v4": "acwm_v4"}.get(predictor_type or "adaln")
     if predictor_type is None:
         predictor_type = {"leworld": "adaln", "motion_token": "motion_token",
-                          "forward_inverse": "forward_inverse", "v3_n1": "v3_n1"}[version]
-    if version not in {"leworld", "motion_token", "forward_inverse", "v3_n1"}:
-        raise ValueError("model.version must be 'leworld', 'motion_token', 'forward_inverse', or 'v3_n1'")
-    if predictor_type not in {"adaln", "motion_token", "forward_inverse", "v3_n1"}:
-        raise ValueError("model.predictor.type must be 'adaln', 'motion_token', 'forward_inverse', or 'v3_n1'")
+                          "forward_inverse": "forward_inverse", "v3_n1": "v3_n1",
+                          "acwm_v4": "acwm_v4"}[version]
+    if version not in {"leworld", "motion_token", "forward_inverse", "v3_n1", "acwm_v4"}:
+        raise ValueError(
+            "model.version must be 'leworld', 'motion_token', 'forward_inverse', 'v3_n1', or 'acwm_v4'"
+        )
+    if predictor_type not in {"adaln", "motion_token", "forward_inverse", "v3_n1", "acwm_v4"}:
+        raise ValueError(
+            "model.predictor.type must be 'adaln', 'motion_token', 'forward_inverse', 'v3_n1', or 'acwm_v4'"
+        )
     if version == "leworld" and predictor_type != "adaln":
         raise ValueError("model.version='leworld' expects predictor.type='adaln'")
     if version != "leworld" and predictor_type != version:
@@ -85,6 +93,25 @@ def build_model(config: dict[str, Any]) -> AgentCentricWorldModel:
             "temporal_heads": temporal_config.get("num_heads", 3),
             "temporal_dropout": temporal_config.get("dropout", 0.0),
             "action_block": predictor_config.get("action_block", model.get("action_block", 1)),
+        })
+    elif predictor_type == "acwm_v4":
+        temporal_config = dict(model.get("temporal_encoder", {}))
+        predictor = PREDICTORS.build({
+            "name": "acwm_v4",
+            "image_channels": model.get("image_channels", 3),
+            "latent_dim": model.get("latent_dim", 192),
+            "action_dim": predictor_config.get("action_dim", config.get("planner", {}).get("action_dim", 2)),
+            "image_size": model.get("image_size", 224),
+            "patch_size": model.get("patch_size", 14),
+            "vit_depth": model.get("vit_depth", 12),
+            "vit_heads": model.get("vit_heads", 3),
+            "mlp_ratio": model.get("mlp_ratio", 4.0),
+            "history_size": model.get("history_size", config.get("data", {}).get("history_length", 3)),
+            "temporal_layers": temporal_config.get("num_layers", 2),
+            "temporal_heads": temporal_config.get("num_heads", 3),
+            "temporal_dropout": temporal_config.get("dropout", 0.0),
+            "action_block": predictor_config.get("action_block", model.get("action_block", 5)),
+            "hidden_dim": model.get("transition_hidden_dim", 512),
         })
     return AgentCentricWorldModel(
         AGENT_ENCODERS.build(model["agent_encoder"]),

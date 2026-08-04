@@ -17,8 +17,8 @@ def validate_prediction(trainer, loader: Iterable[dict[str, torch.Tensor]]) -> d
         count += 1
         for key, value in trainer.compute_one_step(batch).items():
             totals[key] += value.item()
-        if getattr(trainer.model, "predictor_type", "adaln") == "v3_n1" and "rollout_actions" in batch:
-            rollout_metrics = _v3_rollout_metrics(trainer, batch)
+        if getattr(trainer.model, "predictor_type", "adaln") in {"v3_n1", "acwm_v4"} and "rollout_actions" in batch:
+            rollout_metrics = _residual_rollout_metrics(trainer, batch)
             for key, value in rollout_metrics.items():
                 totals[key] += value.item()
         progress.set_postfix(loss=f"{totals['loss'] / count:.5f}")
@@ -27,9 +27,14 @@ def validate_prediction(trainer, loader: Iterable[dict[str, torch.Tensor]]) -> d
     return {key: value / count for key, value in totals.items()}
 
 
-def _v3_rollout_metrics(trainer, raw_batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+def _residual_rollout_metrics(trainer, raw_batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     batch = trainer._move(raw_batch)
-    history = trainer.model.predictor.encode_gaussian_sequence(batch["history_frames"]).mu
+    if getattr(trainer.model, "predictor_type", "adaln") == "v3_n1":
+        history = trainer.model.predictor.encode_gaussian_sequence(batch["history_frames"]).mu
+        encode_frame = lambda frame: trainer.model.predictor.encode_gaussian(frame).mu
+    else:
+        history = trainer.model.predictor.encode_sequence(batch["history_frames"])
+        encode_frame = trainer.model.predictor.encode
     current = history[:, -1]
     history_actions = batch["history_actions"]
     metrics = {}
@@ -38,7 +43,7 @@ def _v3_rollout_metrics(trainer, raw_batch: dict[str, torch.Tensor]) -> dict[str
         history, current = prediction.agent, prediction.environment
         history_actions = torch.cat((history_actions[:, 1:], action[:, None]), dim=1)
         if step_index in {1, 2, 3, 5}:
-            target = trainer.model.predictor.encode_gaussian(batch["rollout_frames"][:, step_index - 1]).mu
+            target = encode_frame(batch["rollout_frames"][:, step_index - 1])
             metrics[f"rollout_mse_step_{step_index}"] = (current - target).square().mean()
     return metrics
 

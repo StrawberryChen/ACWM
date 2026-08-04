@@ -35,8 +35,14 @@ def main() -> None:
     mode = config["training"].get("mode", "one_step")
     model_version = config.get("model", {}).get("version", "")
     train_rollout = config["training"].get("rollout_length", 1) if mode == "rollout" else 1
+    terminal_weight = max(
+        float(config.get("loss", {}).get("terminal", 0.0)),
+        float(config["training"].get("loss_weights", {}).get("terminal", 0.0)),
+    )
+    if model_version == "acwm_v4" and terminal_weight > 0:
+        train_rollout = max(train_rollout, int(config["training"].get("rollout_length", 5)))
     train_dataset = TrajectoryDataset.from_npz(train_paths, data_config["history_length"], train_rollout)
-    val_rollout = 5 if model_version == "v3_n1" else 1
+    val_rollout = 5 if model_version in {"v3_n1", "acwm_v4"} else 1
     val_dataset = TrajectoryDataset.from_npz(val_paths, data_config["history_length"], val_rollout)
     loader_options = {"batch_size": data_config["batch_size"], "num_workers": data_config.get("num_workers", 0)}
     train_loader = DataLoader(train_dataset, shuffle=True, **loader_options)
@@ -47,7 +53,7 @@ def main() -> None:
     optimizer_type = {"adam": torch.optim.Adam, "adamw": torch.optim.AdamW}.get(optimizer_name)
     if optimizer_type is None:
         raise ValueError(f"unsupported optimizer: {optimizer_name}")
-    if model_version == "v3_n1":
+    if model_version in {"v3_n1", "acwm_v4"}:
         action_mean, action_std = _action_stats(train_dataset)
         model.set_action_stats(action_mean, action_std)
         config["action_mean"] = action_mean.tolist()

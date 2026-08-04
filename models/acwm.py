@@ -61,6 +61,13 @@ class AgentCentricWorldModel(nn.Module):
             )
             # Return full frame history as the rollout state, plus current z_t.
             return frame_latents, frame_latents[:, -1]
+        if self.predictor_type == "acwm_v4":
+            assert self.predictor is not None, "acwm_v4 predictor is not configured"
+            frame_latents = self.predictor.encode_sequence(history_frames)
+            assert frame_latents.shape[1] == self.history_size, (
+                f"acwm_v4 expects history_size={self.history_size}, got {frame_latents.shape[1]}"
+            )
+            return frame_latents, frame_latents[:, -1]
         return self.agent_encoder(history_frames, history_actions), self.environment_encoder(current_frame)
 
     def step(self, agent_state: torch.Tensor, environment_state: torch.Tensor,
@@ -97,22 +104,32 @@ class AgentCentricWorldModel(nn.Module):
             # next_agent/history: [B, 3, 192] = [z_{t-1}, z_t, z_pred]
             next_agent = torch.cat((agent_state[:, 1:], next_environment[:, None]), dim=1)
             return Prediction(next_agent, next_environment)
+        if self.predictor_type == "acwm_v4":
+            assert self.predictor is not None, "acwm_v4 predictor is not configured"
+            assert agent_state.ndim == 3, (
+                f"acwm_v4 agent_state must be frame history [B,T,192], got {tuple(agent_state.shape)}"
+            )
+            # next_environment: [B,192] = z_current + predicted residual transition.
+            next_environment = self.predictor.predict_next(agent_state, action, history_actions, action_is_normalized)
+            # next_agent/history: [B,T,192] = [z_{t-T+2},...,z_t,z_pred].
+            next_agent = torch.cat((agent_state[:, 1:], next_environment[:, None]), dim=1)
+            return Prediction(next_agent, next_environment, next_environment - agent_state[:, -1])
         next_agent = self.agent_transition(agent_state, action)
         next_environment = self.environment_transition(environment_state, next_agent)
         return Prediction(next_agent, next_environment)
 
     def rollout(self, agent_state: torch.Tensor, environment_state: torch.Tensor,
                 actions: torch.Tensor, history_actions: torch.Tensor | None = None) -> list[Prediction]:
-        if self.predictor_type in {"motion_token", "v3_n1"}:
+        if self.predictor_type in {"motion_token", "v3_n1", "acwm_v4"}:
             history_actions = self._initial_previous_actions(actions, history_actions)
         v3_actions_are_normalized = (
-            self.predictor_type == "v3_n1"
+            self.predictor_type in {"v3_n1", "acwm_v4"}
             and actions.ndim == 3
             and self.predictor is not None
             and actions.shape[-1] == self.predictor.action_dim
         )
-        if self.predictor_type == "v3_n1":
-            assert self.predictor is not None, "v3_n1 predictor is required"
+        if self.predictor_type in {"v3_n1", "acwm_v4"}:
+            assert self.predictor is not None, f"{self.predictor_type} predictor is required"
             if v3_actions_are_normalized:
                 # CEM/planning path: actions are normalized flattened blocks [B,H,5*2]=[B,H,10].
                 assert actions.ndim == 3 and actions.shape[-1] == self.predictor.action_dim, (
@@ -121,13 +138,13 @@ class AgentCentricWorldModel(nn.Module):
                 )
                 if history_actions is not None:
                     assert history_actions.ndim == 3 and history_actions.shape[-1] == self.predictor.action_dim, (
-                        f"normalized v3 history_actions must be [B,T-1,{self.predictor.action_dim}], "
+                    f"normalized history_actions must be [B,T-1,{self.predictor.action_dim}], "
                         f"got {tuple(history_actions.shape)}"
                     )
             else:
                 # Dataset/training rollout path: actions are raw action blocks [B,H,5,2].
                 assert actions.ndim == 4, (
-                    f"raw v3 actions must be [B,H,action_block,raw_action_dim], got {tuple(actions.shape)}"
+                    f"raw actions must be [B,H,action_block,raw_action_dim], got {tuple(actions.shape)}"
                 )
                 assert tuple(actions.shape[2:]) == (self.predictor.action_block, self.predictor.raw_action_dim), (
                     f"raw v3 actions must end with "
@@ -147,6 +164,12 @@ class AgentCentricWorldModel(nn.Module):
                 assert self.predictor is not None
                 action_norm = action if v3_actions_are_normalized else self.predictor.normalize_action(action)
                 history_actions = torch.cat((history_actions[:, 1:], action_norm[:, None]), dim=1)
+            elif self.predictor_type == "acwm_v4":
+                prediction = self.step(agent_state, environment_state, action, history_actions,
+                                       action_is_normalized=v3_actions_are_normalized)
+                assert self.predictor is not None
+                action_norm = action if v3_actions_are_normalized else self.predictor.normalize_action(action)
+                history_actions = torch.cat((history_actions[:, 1:], action_norm[:, None]), dim=1)
             else:
                 prediction = self.step(agent_state, environment_state, action,
                                        action_is_normalized=(self.predictor_type == "v3_n1"))
@@ -163,16 +186,19 @@ class AgentCentricWorldModel(nn.Module):
         if self.predictor_type == "v3_n1":
             assert self.predictor is not None
             return self.predictor.encode_mean(goal_frame)
+        if self.predictor_type == "acwm_v4":
+            assert self.predictor is not None
+            return self.predictor.encode(goal_frame)
         return self.environment_encoder(goal_frame)
 
     def denormalize_planner_action(self, action: torch.Tensor) -> torch.Tensor:
-        if self.predictor_type == "v3_n1":
+        if self.predictor_type in {"v3_n1", "acwm_v4"}:
             assert self.predictor is not None
             return self.predictor.denormalize_action(action)
         return action
 
     def set_action_stats(self, action_mean: torch.Tensor, action_std: torch.Tensor) -> None:
-        if self.predictor_type == "v3_n1":
+        if self.predictor_type in {"v3_n1", "acwm_v4"}:
             assert self.predictor is not None
             self.predictor.set_action_stats(action_mean, action_std)
 
@@ -203,7 +229,7 @@ class AgentCentricWorldModel(nn.Module):
             zeros = torch.zeros(actions.shape[0], self.history_size - 1, action_dim,
                                 device=actions.device, dtype=actions.dtype)
             return zeros
-        if self.predictor_type == "v3_n1" and history_actions.ndim == 4:
+        if self.predictor_type in {"v3_n1", "acwm_v4"} and history_actions.ndim == 4:
             # Raw action block history [B,T-1,action_block,2] -> normalized [B,T-1,action_block*2].
             assert self.predictor is not None
             history_actions = self.predictor.normalize_action_sequence(history_actions)
