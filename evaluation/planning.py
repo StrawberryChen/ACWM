@@ -246,6 +246,7 @@ class PlanningEvaluator:
             raise ValueError(
                 f"replan_interval={replan_interval} cannot exceed planner horizon={self.planner.horizon}"
             )
+        uses_action_blocks = getattr(model, "predictor_type", None) in {"v3_n1", "acwm_v4"}
         progress = tqdm(range(episodes), desc="Push-T planning", dynamic_ncols=True, leave=True)
         for episode in progress:
             env = self._make_env()
@@ -258,11 +259,11 @@ class PlanningEvaluator:
                 frames = deque([self._image(frame) for frame in case["history_frames"]],
                                maxlen=self.history_length)
                 frames[-1] = current
-                if getattr(model, "predictor_type", None) == "v3_n1":
+                if uses_action_blocks:
                     raw_history_actions = torch.as_tensor(case["history_actions"], device=self.device).float().unsqueeze(0)
                     normalized_history_actions = model.predictor.normalize_action_sequence(raw_history_actions)[0]
                     assert normalized_history_actions.shape == (self.history_length - 1, self.action_dim), (
-                        f"v3_n1 planning history_actions must be normalized flattened "
+                        f"{getattr(model, 'predictor_type', None)} planning history_actions must be normalized flattened "
                         f"[{self.history_length - 1},{self.action_dim}], got "
                         f"{tuple(normalized_history_actions.shape)}"
                     )
@@ -292,7 +293,7 @@ class PlanningEvaluator:
             for step in range(self.config.get("max_steps", 300)):
                 if not action_queue:
                     history_frames = torch.stack(tuple(frames)).unsqueeze(0)
-                    if getattr(model, "predictor_type", None) == "v3_n1":
+                    if uses_action_blocks:
                         history_actions = (torch.stack(tuple(actions)).unsqueeze(0) if len(actions)
                                            else torch.zeros(1, self.history_length - 1, self.action_dim,
                                                             device=self.device))
@@ -321,7 +322,7 @@ class PlanningEvaluator:
                     keep_horizon = min(replan_interval, planned.shape[1])
                     rest = planned[:, keep_horizon:]
                     next_init = rest.detach() if bool(self.config.get("warm_start", True)) and rest.numel() else None
-                    if getattr(model, "predictor_type", None) == "v3_n1" and hasattr(model, "denormalize_planner_action"):
+                    if uses_action_blocks and hasattr(model, "denormalize_planner_action"):
                         # planned block: [action_block * raw_action_dim] normalized and flattened.
                         # With LeWorld-aligned Push-T this is [5*2]=[10].
                         # Env queue receives raw single-step actions [raw_action_dim]=[2].
@@ -339,7 +340,7 @@ class PlanningEvaluator:
                     else:
                         action_queue.extend((action, None, True) for action in planned[0, :keep_horizon].unbind(0))
                 action, planned_block, block_done = action_queue.popleft()
-                env_action = action if getattr(model, "predictor_type", None) == "v3_n1" else (
+                env_action = action if uses_action_blocks else (
                     model.denormalize_planner_action(action[None])[0] if hasattr(model, "denormalize_planner_action") else action
                 )
                 assert env_action.ndim == 1 and env_action.shape[-1] == raw_action_dim, (
@@ -352,7 +353,7 @@ class PlanningEvaluator:
                 observation, reward, terminated, truncated, info = env.step(env_action.cpu().numpy())
                 episode_reward = max(episode_reward, float(reward))
                 current = self._env_image(env, observation, info)
-                if getattr(model, "predictor_type", None) == "v3_n1":
+                if uses_action_blocks:
                     # LeWorld action_block alignment: one latent/frame-history step
                     # advances only after action_block raw env actions have executed.
                     if block_done:
@@ -362,7 +363,7 @@ class PlanningEvaluator:
                             actions.append(planned_block)
                 else:
                     frames.append(current)
-                if self.history_length > 1 and getattr(model, "predictor_type", None) != "v3_n1":
+                if self.history_length > 1 and not uses_action_blocks:
                     actions.append(action)
                 if video:
                     video.append(env.render())
