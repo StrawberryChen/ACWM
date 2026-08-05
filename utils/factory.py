@@ -112,6 +112,7 @@ def build_model(config: dict[str, Any]) -> AgentCentricWorldModel:
             "temporal_dropout": temporal_config.get("dropout", 0.0),
             "action_block": predictor_config.get("action_block", model.get("action_block", 5)),
             "hidden_dim": model.get("transition_hidden_dim", 512),
+            "transition_mode": model.get("transition_mode", "temporal"),
         })
     return AgentCentricWorldModel(
         AGENT_ENCODERS.build(model["agent_encoder"]),

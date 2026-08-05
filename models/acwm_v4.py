@@ -65,6 +65,73 @@ class V4TemporalActionEncoder(nn.Module):
         return self.transformer(tokens, mask=causal_mask)
 
 
+class V4MarkovTransitionPredictor(nn.Module):
+    """Single-frame Markov residual transition predictor.
+
+    Input shape:  z_current [B, 192]
+                  action    [B, action_block * raw_action_dim]
+    Output shape: delta_z   [B, 192]
+    """
+
+    def __init__(self, latent_dim: int = 192, action_dim: int = 10, hidden_dim: int = 512):
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.action_dim = action_dim
+        self.action_encoder = nn.Sequential(
+            nn.Linear(action_dim, 64),
+            nn.LayerNorm(64),
+            nn.GELU(),
+            nn.Linear(64, latent_dim),
+        )
+        self.state_encoder = nn.Sequential(
+            nn.LayerNorm(latent_dim),
+            nn.Linear(latent_dim, latent_dim),
+            nn.GELU(),
+        )
+        # One state query attends to one action condition token. This mirrors
+        # diffusion-style conditional prediction while intentionally avoiding a
+        # temporal transformer/history shortcut.
+        self.action_cross_attention = nn.MultiheadAttention(
+            embed_dim=latent_dim,
+            num_heads=3,
+            batch_first=True,
+        )
+        self.cross_norm = nn.LayerNorm(latent_dim)
+        self.transition_predictor = nn.Sequential(
+            nn.Linear(latent_dim * 4, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, latent_dim),
+        )
+
+    def forward(self, z_current: torch.Tensor, action_norm: torch.Tensor) -> torch.Tensor:
+        assert z_current.ndim == 2, (
+            f"z_current must be [B,{self.latent_dim}], got {tuple(z_current.shape)}"
+        )
+        assert action_norm.ndim == 2 and action_norm.shape[-1] == self.action_dim, (
+            f"action_norm must be [B,{self.action_dim}], got {tuple(action_norm.shape)}"
+        )
+        # state_token/action_token: [B,1,192]
+        state_token = self.state_encoder(z_current)[:, None]
+        action_token = self.action_encoder(action_norm)[:, None]
+        # conditioned_state: [B,1,192], Q=state, K/V=action.
+        attended, _ = self.action_cross_attention(state_token, action_token, action_token, need_weights=False)
+        conditioned_state = self.cross_norm(state_token + attended).squeeze(1)
+        action_latent = action_token.squeeze(1)
+        # transition_input: [B,768] = concat(state, action, interaction, difference).
+        transition_input = torch.cat((
+            conditioned_state,
+            action_latent,
+            conditioned_state * action_latent,
+            conditioned_state - action_latent,
+        ), dim=-1)
+        # delta_z: [B,192]
+        return self.transition_predictor(transition_input)
+
+
 class ACWMV4ResidualWorldModel(nn.Module):
     """ACWM v4: deterministic residual latent transition model.
 
@@ -81,7 +148,7 @@ class ACWMV4ResidualWorldModel(nn.Module):
                  image_size: int = 224, patch_size: int = 14, vit_depth: int = 12,
                  vit_heads: int = 3, mlp_ratio: float = 4.0, history_size: int = 3,
                  temporal_layers: int = 2, temporal_heads: int = 3, temporal_dropout: float = 0.0,
-                 action_block: int = 5, hidden_dim: int = 512):
+                 action_block: int = 5, hidden_dim: int = 512, transition_mode: str = "temporal"):
         super().__init__()
         try:
             from timm.models.vision_transformer import VisionTransformer
@@ -92,6 +159,9 @@ class ACWMV4ResidualWorldModel(nn.Module):
         self.action_block = action_block
         self.action_dim = action_dim * action_block
         self.history_size = history_size
+        if transition_mode not in {"temporal", "markov"}:
+            raise ValueError("transition_mode must be 'temporal' or 'markov'")
+        self.transition_mode = transition_mode
         self.encoder = VisionTransformer(
             img_size=image_size,
             patch_size=patch_size,
@@ -124,6 +194,11 @@ class ACWMV4ResidualWorldModel(nn.Module):
             nn.LayerNorm(hidden_dim),
             nn.GELU(),
             nn.Linear(hidden_dim, latent_dim),
+        )
+        self.markov_predictor = V4MarkovTransitionPredictor(
+            latent_dim=latent_dim,
+            action_dim=self.action_dim,
+            hidden_dim=hidden_dim,
         )
         self.register_buffer("image_mean", torch.tensor((0.485, 0.456, 0.406)).view(1, 3, 1, 1), persistent=False)
         self.register_buffer("image_std", torch.tensor((0.229, 0.224, 0.225)).view(1, 3, 1, 1), persistent=False)
@@ -261,6 +336,10 @@ class ACWMV4ResidualWorldModel(nn.Module):
         if frame_latents.ndim == 2:
             frame_latents = frame_latents[:, None]
         z_current = frame_latents[:, -1]
+        if self.transition_mode == "markov":
+            action_norm = action if action_is_normalized and action.ndim == 2 else self.normalize_action(action)
+            delta = self.markov_predictor(z_current, action_norm)
+            return z_current + delta
         action_seq = self.action_sequence(history_actions, action, action_is_normalized)
         if action_seq.shape[1] != frame_latents.shape[1]:
             action_seq = action_seq[:, -frame_latents.shape[1]:]
@@ -284,6 +363,13 @@ class ACWMV4ResidualWorldModel(nn.Module):
         assert frame_latents.shape[1] == self.history_size, (
             f"v4 expects history_size={self.history_size}, got {frame_latents.shape[1]}"
         )
+        if self.transition_mode == "markov":
+            action_seq = self.action_sequence(history_actions, current_action, action_is_normalized)
+            predictions = []
+            for index in range(frame_latents.shape[1]):
+                delta = self.markov_predictor(frame_latents[:, index], action_seq[:, index])
+                predictions.append(frame_latents[:, index] + delta)
+            return torch.stack(predictions, dim=1)
         action_seq = self.action_sequence(history_actions, current_action, action_is_normalized)
         delta_seq = self._predict_delta_from_sequence(frame_latents, action_seq)
         return frame_latents + delta_seq

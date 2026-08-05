@@ -28,6 +28,12 @@ def config():
     }
 
 
+def markov_config():
+    cfg = config()
+    cfg["model"]["transition_mode"] = "markov"
+    return cfg
+
+
 def batch(batch_size=2, rollout_length=5):
     frames = torch.rand(batch_size, 3, 3, 32, 32)
     return {
@@ -89,3 +95,19 @@ def test_acwm_v4_rollout_maintains_history_window():
     assert len(predictions) == 5
     assert predictions[-1].agent.shape == (2, 3, 192)
     assert predictions[-1].environment.shape == (2, 192)
+
+
+def test_acwm_v4_markov_predictor_ignores_temporal_encoder(monkeypatch):
+    model = build_model(markov_config())
+
+    def forbidden(*_, **__):
+        raise AssertionError("markov transition must not call temporal_encoder")
+
+    monkeypatch.setattr(model.predictor.temporal_encoder, "forward", forbidden)
+    history = torch.randn(2, 3, 192)
+    current = history[:, -1]
+    pred = model.step(history, current, torch.randn(2, 10), action_is_normalized=True)
+    assert pred.environment.shape == (2, 192)
+    actions = torch.randn(2, 5, 10).clamp(-1, 1)
+    rollout = model.rollout(history, current, actions)
+    assert rollout[-1].environment.shape == (2, 192)
