@@ -1,0 +1,55 @@
+seed: 42
+device: cpu
+
+data:
+  train_paths: []
+  val_paths: []
+  history_length: 3
+  batch_size: 256
+  num_workers: 2
+
+model:
+  version: obs_graph
+  model_name: Observation Graph Bridge
+  latent_dim: 192
+  image_size: 224
+  patch_size: 14
+  vit_depth: 12
+  vit_heads: 3
+  mlp_ratio: 4.0
+  image_channels: 3
+  hidden_dim: 512
+
+training:
+  epochs: 100
+  optimizer: adamw
+  learning_rate: 0.0003
+  weight_decay: 0.05
+  betas: [0.9, 0.95]
+  checkpoint: outputs/obs_graph/last.pt
+  best_checkpoint: outputs/obs_graph/best.pt
+  metrics_file: outputs/obs_graph/metrics.jsonl
+  # Present so scripts/prepare_pusht_zarr.py can reuse the existing config writer.
+  best_val_pred_checkpoint: outputs/obs_graph/best_val.pt
+  best_rollout_step5_checkpoint: outputs/obs_graph/best_rollout.pt
+
+loss:
+  bridge: 1.0
+  path: 1.0
+  var: 1.0
+  cov: 1.0
+  velocity: 0.01
+
+validation:
+  video_dir: outputs/videos/obs_graph
+  prediction_video_interval: 999
+  planning_interval: 999
+  planning_episodes: 0
+  planning_videos: 0
+
+wandb:
+  enabled: true
+  project: acwm
+  entity: null
+  name: obs_graph_seed_42
+  mode: online
