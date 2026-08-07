@@ -246,7 +246,7 @@ class PlanningEvaluator:
             raise ValueError(
                 f"replan_interval={replan_interval} cannot exceed planner horizon={self.planner.horizon}"
             )
-        uses_action_blocks = getattr(model, "predictor_type", None) in {"v3_n1", "acwm_v4"}
+        uses_action_blocks = getattr(model, "predictor_type", None) in {"v3_n1", "acwm_v4", "edge_guided_forward"}
         progress = tqdm(range(episodes), desc="Push-T planning", dynamic_ncols=True, leave=True)
         for episode in progress:
             env = self._make_env()

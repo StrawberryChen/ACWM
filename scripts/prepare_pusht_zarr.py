@@ -45,13 +45,19 @@ def parse_args() -> argparse.Namespace:
 def write_colab_config(args: argparse.Namespace, root: Path) -> None:
     with open(args.base_config, encoding="utf-8") as stream:
         config = yaml.safe_load(stream)
+    version = str(config.get("model", {}).get("version", "acwm"))
     config["device"] = "cuda"
     config["data"]["train_paths"] = [str(root / "data/train/*.npz")]
     config["data"]["val_paths"] = [str(root / "data/val/*.npz")]
-    config["training"]["checkpoint"] = str(root / "checkpoints/acwm_latest.pt")
-    config["training"]["best_checkpoint"] = str(root / "checkpoints/acwm_best.pt")
-    config["training"]["metrics_file"] = str(root / "outputs/metrics.jsonl")
-    config["validation"]["video_dir"] = str(root / "outputs/videos")
+    config["training"]["checkpoint"] = str(root / f"checkpoints/{version}_latest.pt")
+    config["training"]["best_checkpoint"] = str(root / f"checkpoints/{version}_best.pt")
+    if "best_planning_checkpoint" in config["training"]:
+        config["training"]["best_planning_checkpoint"] = str(root / f"checkpoints/{version}_best_planning.pt")
+    config["training"]["metrics_file"] = str(root / f"outputs/{version}_metrics.jsonl")
+    if "validation" in config:
+        config["validation"]["video_dir"] = str(root / f"outputs/videos/{version}")
+    if version == "edge_guided_forward" and not config.get("model", {}).get("obs_checkpoint"):
+        config["model"]["obs_checkpoint"] = str(root / "checkpoints/obs_graph_best.pt")
     output = Path(args.config_output)
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("w", encoding="utf-8") as stream:
