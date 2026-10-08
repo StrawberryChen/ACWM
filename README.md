@@ -99,3 +99,9 @@ agent/environment latent prediction error；planning MP4 展示 CEM 在环境中
 它将预测得到的最终 Environment State 与编码后的 goal latent 比较。将
 `training.mode` 设为 `rollout` 后，内置 Dataset 会按照 `rollout_length` 自动生成
 这两个字段。
+
+## 独立 Action-Contrastive 实验
+
+新增单帧 CNN + action residual MLP 管线，唯一训练损失为 counterfactual action cosine ranking CE。
+数据为独立的 raw-step train/val/test，不覆盖已有数据；collapse、shuffle、角度泛化、future retrieval 与 PCA 均单独记录。
+完整 Colab 命令、输出路径及 planning 开关见 [ACTION_CONTRASTIVE.md](ACTION_CONTRASTIVE.md)。

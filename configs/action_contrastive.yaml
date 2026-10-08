@@ -1,0 +1,66 @@
+seed: 42
+device: cuda
+output_dir: outputs/action_contrastive
+data:
+  train_paths: []
+  val_paths: []
+  test_paths: []
+  action_scale: 100.0
+  val_fraction: 0.1
+  test_fraction: 0.1
+  batch_size: 256
+  num_workers: 2
+  min_action_norm: 0.0
+model:
+  version: action_contrastive
+  latent_dim: 128
+  image_size: 96
+  architecture: residual_mlp
+loss:
+  temperature: 0.1
+  negative_type: opposite
+  num_negatives: 1
+training:
+  epochs: 100
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  gradient_clip_norm: 1.0
+validation:
+  diagnostic_samples: 2048
+  angles: [30, 60, 90, 120, 150, 180]
+  retrieval_horizons: [1, 2, 4, 8, 16]
+  retrieval_candidates: 32
+  retrieval_samples: 512
+  planning_enabled: false
+  planning_interval: 20
+  planning_episodes: 50
+  planning_videos: 5
+wandb:
+  enabled: true
+  project: acwm
+  name: action_contrastive_seed_42
+  mode: online
+planner:
+  horizon: 16
+  action_dim: 2
+  action_low: -1.0
+  action_high: 1.0
+  population: 300
+  elites: 30
+  iterations: 30
+  var_scale: 1.0
+  clamp_actions: true
+environment:
+  env_id: swm/PushT-v1
+  eval_from_dataset: true
+  goal_offset_steps: 25
+  observation_width: 96
+  observation_height: 96
+  max_steps: 100
+  replan_interval: 1
+  action_block: 1
+  relative_action: true
+  warm_start: true
+  success_threshold: 0.95
+  seed: 1000
+  video_fps: 20
