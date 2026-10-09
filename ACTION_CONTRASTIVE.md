@@ -51,6 +51,9 @@ drive.mount('/content/drive')
 ```
 
 如果 `/content/ACWM` 已存在，跳过 clone，直接 cd 后 pull。需要重新准备本版本 raw-step 数据；旧版本数据不删除、不覆盖。
+每 5 epoch 做一次 validation，可在训练命令追加 `--validation-interval 5`，或设置 YAML `validation.interval: 5`。
+包括 validation loss、shuffle、角度泛化、retrieval、representation diagnostics 与图；最后一轮也执行 validation。
+每轮仍训练、记录训练指标及保存 latest 权重。planning 由独立的 `planning_enabled/planning_interval` 控制。
 准备脚本复用已有下载压缩包，数据存到 `ACWM/action_contrastive/data/{train,val,test}`。
 相同 manifest 可重跑；更换 split seed/比例/动作尺度时使用新的 output-root，防止混入旧 split。
 

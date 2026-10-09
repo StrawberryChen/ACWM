@@ -26,6 +26,7 @@ training:
   weight_decay: 0.0001
   gradient_clip_norm: 1.0
 validation:
+  interval: 1
   diagnostic_samples: 2048
   angles: [30, 60, 90, 120, 150, 180]
   retrieval_horizons: [1, 2, 4, 8, 16]

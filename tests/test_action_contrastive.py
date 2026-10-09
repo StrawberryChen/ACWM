@@ -125,24 +125,27 @@ def test_train_validate_checkpoint_resume_and_evaluate(tmp_path, monkeypatch):
     config["data"].update(batch_size=4, num_workers=0)
     config["model"]["latent_dim"] = 32
     config["wandb"]["enabled"] = False
-    config["training"]["epochs"] = 1
+    config["training"]["epochs"] = 2
     config["validation"].update(diagnostic_samples=8, retrieval_samples=4)
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(config))
-    monkeypatch.setattr(sys, "argv", ["train_action_contrastive.py", "--config", str(path)])
+    monkeypatch.setattr(sys, "argv", ["train_action_contrastive.py", "--config", str(path), "--validation-interval", "5"])
     main()
     saved = tmp_path / "outputs/checkpoints/latest.pt"
     checkpoint = torch.load(saved, weights_only=False)
-    assert checkpoint["epoch"] == 1
+    assert checkpoint["epoch"] == 2
+    assert "val/loss" not in checkpoint["history"][0]
+    assert "val/loss" in checkpoint["history"][1]  # final epoch validates even off-interval
+    assert checkpoint["config"]["validation"]["interval"] == 5
     assert checkpoint["metrics"]["retrieval/candidates"] == 4
     assert (tmp_path / "outputs/plots/horizon_vs_retrieval_accuracy.png").exists()
     assert (tmp_path / "outputs/checkpoints/best_ranking.pt").exists()
     # Continue one more epoch and verify optimizer/scheduler/checkpoint interfaces.
-    config["training"]["epochs"] = 2
+    config["training"]["epochs"] = 3
     path.write_text(yaml.safe_dump(config))
     monkeypatch.setattr(sys, "argv", ["train_action_contrastive.py", "--config", str(path), "--resume", "--checkpoint", str(saved)])
     main()
-    assert torch.load(saved, weights_only=False)["epoch"] == 2
+    assert torch.load(saved, weights_only=False)["epoch"] == 3
     monkeypatch.setattr(sys, "argv", ["train_action_contrastive.py", "--config", str(path), "--mode", "evaluate", "--split", "test", "--checkpoint", str(saved)])
     main()
     assert (tmp_path / "outputs/evaluation_test.jsonl").exists()

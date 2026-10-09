@@ -92,10 +92,16 @@ def main():
     parser.add_argument("--mode", choices=("train", "evaluate", "plan"), default="train")
     parser.add_argument("--checkpoint")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--validation-interval", type=int, help="Validate every N epochs (also on final epoch)")
     parser.add_argument("--split", choices=("val", "test"), default="val")
     args = parser.parse_args()
     with open(args.config) as stream:
         config = yaml.safe_load(stream)
+    if args.validation_interval is not None:
+        config["validation"]["interval"] = args.validation_interval
+    validation_interval = int(config["validation"].get("interval", 1))
+    if validation_interval < 1:
+        raise ValueError("validation interval must be positive")
     seed = config["seed"]
     random.seed(seed)
     np.random.seed(seed)
@@ -171,20 +177,26 @@ def main():
             print(f"\nAction-Contrastive epoch {epoch}/{config['training']['epochs']}")
             train = run_epoch(model, train_loader, device, config["loss"], optimizer,
                               config["training"]["gradient_clip_norm"], seed+epoch)
-            val = run_epoch(model, val_loader, device, config["loss"], seed=seed)
-            metrics = {**{f"train/{k}": v for k, v in train.items()}, **{f"val/{k}": v for k, v in val.items()}}
-            extra, observations, metadata = diagnostics(model, config, device)
-            metrics.update(extra)
+            do_validate = epoch % validation_interval == 0 or epoch == config["training"]["epochs"]
+            metrics = {f"train/{k}": v for k, v in train.items()}
+            val = None
+            if do_validate:
+                val = run_epoch(model, val_loader, device, config["loss"], seed=seed)
+                metrics.update({f"val/{k}": v for k, v in val.items()})
+                extra, observations, metadata = diagnostics(model, config, device)
+                metrics.update(extra)
             metrics["optimization/learning_rate"] = optimizer.param_groups[0]["lr"]
             do_plan = config["validation"]["planning_enabled"] and epoch % config["validation"]["planning_interval"] == 0
             if do_plan:
                 metrics.update(planning(model, config, device, output / f"videos/epoch_{epoch:04d}", "val"))
             history.append({"epoch": epoch, **metrics})
-            save_plots(history, metrics, observations, metadata, config, output / "plots")
+            if do_validate:
+                save_plots(history, metrics, observations, metadata, config, output / "plots")
             scheduler.step()
-            ranking_improved = val["ranking_acc"] > best_ranking
+            ranking_improved = val is not None and val["ranking_acc"] > best_ranking
             planning_improved = do_plan and metrics["planning/success_rate"] > best_planning
-            best_ranking = max(best_ranking, val["ranking_acc"])
+            if val is not None:
+                best_ranking = max(best_ranking, val["ranking_acc"])
             if do_plan:
                 best_planning = max(best_planning, metrics["planning/success_rate"])
             names = ["latest.pt"] + (["best_ranking.pt"] if ranking_improved else []) + (["best_planning.pt"] if planning_improved else [])
@@ -192,12 +204,16 @@ def main():
                 checkpoint(output / "checkpoints" / name, model, optimizer, scheduler, epoch, config,
                            metrics, history, best_ranking, best_planning)
             append_metrics(output / "logs/metrics.jsonl", epoch, metrics)
-            images = {f"plots/{p.stem}": logger.wandb.Image(str(p)) for p in (output / "plots").glob("*.png")} if logger.run is not None else {}
+            images = {f"plots/{p.stem}": logger.wandb.Image(str(p)) for p in (output / "plots").glob("*.png")} if logger.run is not None and do_validate else {}
             logger.log({**metrics, **images}, step=epoch)
-            print(f"val_acc={val['ranking_acc']:.4f} gap={val['score_gap']:.4f} "
-                  f"feature_std={metrics['representation/mean_feature_std']:.4f} "
-                  f"O_drop={metrics.get('dependency/O_shuffle_drop', 0):.4f} "
-                  f"A_drop={metrics.get('dependency/A_shuffle_drop', 0):.4f}")
+            if val is not None:
+                print(f"val_acc={val['ranking_acc']:.4f} gap={val['score_gap']:.4f} "
+                      f"feature_std={metrics['representation/mean_feature_std']:.4f} "
+                      f"O_drop={metrics.get('dependency/O_shuffle_drop', 0):.4f} "
+                      f"A_drop={metrics.get('dependency/A_shuffle_drop', 0):.4f}")
+            else:
+                print(f"train_loss={train['loss']:.4f} train_acc={train['ranking_acc']:.4f}; "
+                      f"validation every {validation_interval} epochs")
     finally:
         logger.finish()
 
