@@ -79,7 +79,7 @@ class PlanningEvaluator:
                 env_id,
                 render_mode="rgb_array",
                 resolution=self.config.get("observation_width", 224),
-                with_target=True,
+                with_target=bool(self.config.get("with_target", True)),
                 relative=bool(self.config.get("relative_action", True)),
             )
         try:
@@ -142,6 +142,16 @@ class PlanningEvaluator:
         if self._uses_swm_env():
             return self._image(env.render())
         return self._image(observation)
+
+    def _video_frame(self, env, goal: torch.Tensor) -> np.ndarray:
+        frame = env.render()
+        if not self.config.get("video_show_goal", False):
+            return frame
+        # Optional V2 view: actual execution (left), fixed goal observation (right).
+        target = (goal[0].detach().clamp(0, 1)*255).byte().permute(1, 2, 0).cpu().numpy()
+        if frame.shape != target.shape:
+            raise ValueError("side-by-side video requires matching render and goal resolution")
+        return np.concatenate((frame, target), axis=1)
 
     @staticmethod
     def _set_goal_pose(env, goal_state: np.ndarray) -> None:
@@ -283,7 +293,7 @@ class PlanningEvaluator:
                 actions = deque([torch.zeros(self.action_dim, device=self.device) for _ in range(self.history_length - 1)],
                                 maxlen=max(self.history_length - 1, 1))
                 goal = fixed_goal
-            video = [env.render()] if episode < videos_to_save else []
+            video = [self._video_frame(env, goal)] if episode < videos_to_save else []
             # gym_pusht reward is overlap in [0,1], but swm/PushT-v1 reward is
             # negative goal distance. Initialize from -inf for swm so "best"
             # reward can actually become the least-negative distance.
@@ -366,7 +376,7 @@ class PlanningEvaluator:
                 if self.history_length > 1 and not uses_action_blocks:
                     actions.append(action)
                 if video:
-                    video.append(env.render())
+                    video.append(self._video_frame(env, goal))
                 succeeded = bool(terminated or info.get("is_success", False) or reward >= self.config.get("success_threshold", 0.95))
                 if step % 10 == 0:
                     progress.set_postfix(episode=episode + 1, step=step + 1,

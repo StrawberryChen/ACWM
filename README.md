@@ -105,3 +105,7 @@ agent/environment latent prediction error；planning MP4 展示 CEM 在环境中
 新增单帧 CNN + action residual MLP 管线，唯一训练损失为 counterfactual action cosine ranking CE。
 数据为独立的 raw-step train/val/test，不覆盖已有数据；collapse、shuffle、角度泛化、future retrieval 与 PCA 均单独记录。
 完整 Colab 命令、输出路径及 planning 开关见 [ACTION_CONTRASTIVE.md](ACTION_CONTRASTIVE.md)。
+
+第二个独立实验采用真实动作分支的条件高斯 NLL、行匹配与真实 latent SIGReg。
+默认每 5 epoch 验证，100 epoch 结束后自动执行一次 test planning；原实验保持不变。
+新数据准备和训练流程见 [ACTION_MATCHING_V2.md](ACTION_MATCHING_V2.md)。
