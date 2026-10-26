@@ -1,4 +1,5 @@
 seed: 42
+planning_protocol: leworld_raw_step
 device: cuda
 output_dir: outputs/action_contrastive
 data:
@@ -42,7 +43,7 @@ wandb:
   name: action_contrastive_seed_42
   mode: online
 planner:
-  horizon: 16
+  horizon: 25
   action_dim: 2
   action_low: -1.0
   action_high: 1.0
@@ -50,18 +51,22 @@ planner:
   elites: 30
   iterations: 30
   var_scale: 1.0
-  clamp_actions: true
+  clamp_actions: false
+  cost_type: latent_mse_sum
+  seed: 42
+  std_correction: 0
+  min_std: 0.0
 environment:
   env_id: swm/PushT-v1
   eval_from_dataset: true
   goal_offset_steps: 25
   observation_width: 96
   observation_height: 96
-  max_steps: 100
-  replan_interval: 1
+  max_steps: 50
+  replan_interval: 25
   action_block: 1
   relative_action: true
   warm_start: true
   success_threshold: 0.95
-  seed: 1000
+  seed: 42
   video_fps: 20

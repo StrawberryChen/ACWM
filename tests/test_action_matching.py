@@ -224,8 +224,9 @@ def test_real_counterfactual_collection_and_unchanged_cem_mpc(tmp_path):
     dataset = ActionBranchDataset([str(branch_path)])
     assert len(dataset) == 6 and dataset[0]["actions"].shape == (3, 2)
     config["data"]["val_paths"] = [str(path)]
+    config["data"]["train_paths"] = [str(path)]  # synthetic normalization fixture
     config["planner"].update(horizon=2, population=8, elites=2, iterations=2)
-    config["environment"].update(max_steps=2)
+    config["environment"].update(max_steps=2, replan_interval=1)
     config["validation"].update(planning_episodes=1, planning_videos=1)
     model = ActionMatchingWorldModel().eval()
     result = planning(model, config, torch.device("cpu"), tmp_path/"videos", "val")

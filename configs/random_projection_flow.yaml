@@ -1,0 +1,6 @@
+base: avs_flow.yaml
+output_dir: /content/drive/MyDrive/ACWM/avs_target/outputs/random_projection_flow
+target:
+  kind: random_projection
+wandb:
+  name: random_projection_flow_seed42

@@ -1,0 +1,34 @@
+base: avs_flow.yaml
+experiment: terminal_only
+output_dir: /content/drive/MyDrive/ACWM/avs_target/outputs/terminal_only
+terminal:
+  backend: downsample
+  size: 24
+  dct_coefficients: 8
+loss:
+  lambda_motion: 1.0
+  lambda_terminal: 1.0
+planning:
+  enabled: false
+  num_candidates: 512
+  num_elites: 64
+  iterations: 5
+  horizon: 16
+  execute_steps: 1
+  future_samples: 1
+  flow_steps: 8
+  candidate_batch_size: 64
+  action_low: -1.0
+  action_high: 1.0
+  initial_std: 0.3
+  min_std: 0.01
+  seed: 42
+  episodes: 50
+  video_episodes: 5
+  max_steps: 100
+  goal_offset_steps: 25
+  with_target: true
+  # Original Push-T dataset's fixed visual marker; NOT the sampled physical goal.
+  render_goal_pose: [256.0, 256.0, 0.7853981633974483]
+wandb:
+  name: terminal_only_seed42

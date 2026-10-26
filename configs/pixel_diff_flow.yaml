@@ -1,0 +1,6 @@
+base: avs_flow.yaml
+output_dir: /content/drive/MyDrive/ACWM/avs_target/outputs/pixel_diff_flow
+target:
+  kind: pixel_diff
+wandb:
+  name: pixel_diff_flow_seed42

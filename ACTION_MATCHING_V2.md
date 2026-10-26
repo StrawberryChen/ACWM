@@ -66,9 +66,12 @@ latent std/effective rank/pairwise cosine、σ及边界饱和率、O/A shuffle�
 在 test episodes 上评测；test 结果不参与选择最佳模型。
 默认 50 episodes，保存前 5 个视频。planning_evaluated.pt 记录所用权重和结果。
 
-复用现有 CEM/MPC：horizon=16 raw steps，300 candidates，30 iterations，30 elites，
-normalized actions [-1,1]，每执行 1 raw action 重规划，action scale=100。
-rollout 使用条件均值 μ，不采样 σ；目标成本仍然是 latent cosine distance。
+当前 CEM/MPC：horizon=25 raw steps，300 candidates，30 iterations，30 elites，
+执行 25 raw actions 后重规划，评测预算 50，action scale=100。
+在 train-only 标准化 action 坐标搜索，不额外 clipping；送入原 Predictor/环境前反标准化。
+rollout 使用条件均值 μ，不采样 σ；目标成本改为 latent squared error sum。
+训练仍是单 raw-step NLL + matching + SIGReg，不改 Encoder；完整边界与旧 YAML
+更新方式见 [LEWORLD_PLANNING_ALIGNMENT.md](LEWORLD_PLANNING_ALIGNMENT.md)。
 goal 是测试轨迹中起点后 +25 raw step 的固定观测，成功判定复用当前 evaluator，
 并不改为“最终标准 T 区域”的另一种任务。
 这版环境观测不绘制目标标记，确保训练/当前/goal 的输入渲染一致；

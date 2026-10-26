@@ -77,7 +77,10 @@ drive.mount('/content/drive')
 ```
 
 若希望训练中每 20 epoch planning，将生成 YAML 中 `validation.planning_enabled` 设为 `true`。
-规划 horizon=16 raw steps，MPC 默认执行 1 步后重规划，候选动作限制在 [-1,1]，代价为 `1-cosine(O_final,O_goal)`。
+当前 planning 已改为 LeWorld raw-step 适配：horizon=25 raw steps，执行 25 步后重规划，
+预算 50 raw steps，终点成本为 latent squared error sum；CEM 在 train-only 标准化
+action 坐标中搜索，不额外做 [-1,1] clipping。训练仍是单 raw-step cosine CE。
+完整边界和旧 Colab YAML 更新方式见 [LEWORLD_PLANNING_ALIGNMENT.md](LEWORLD_PLANNING_ALIGNMENT.md)。
 复用当前 `CEMPlanner` 与 `PlanningEvaluator`。dataset goal 默认是 +25 raw steps 的环境状态，success 是 swm 环境定义的状态目标成功率（0–100%）；不等同于标准 gym-pusht 固定 T 目标区域 coverage。
 swm 环境输出负状态距离，本版记录 mean best/final goal distance 与 reward，不把它们误标为 coverage。
 另记录规划耗时、动作幅度/跳变、latent imagined transitions/sec。

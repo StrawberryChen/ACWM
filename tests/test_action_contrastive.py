@@ -164,8 +164,9 @@ def test_real_pusht_planning_and_video(tmp_path):
              actions=np.zeros((29, 2), dtype=np.float32), states=states,
              frame_skip=1, action_mode="relative")
     config["data"]["val_paths"] = [str(path)]
+    config["data"]["train_paths"] = [str(path)]  # synthetic normalization fixture
     config["planner"].update(horizon=2, population=8, elites=2, iterations=2)
-    config["environment"].update(max_steps=2)
+    config["environment"].update(max_steps=2, replan_interval=1)
     config["validation"].update(planning_episodes=1, planning_videos=1)
     model = ActionContrastiveWorldModel().eval()
     result = planning(model, config, torch.device("cpu"), tmp_path / "videos", "val")

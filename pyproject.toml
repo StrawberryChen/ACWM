@@ -16,6 +16,7 @@ colab = ["wandb>=0.17", "datasets>=2.19", "zarr>=2.18", "gymnasium>=0.29", "stab
 [tool.setuptools.packages.find]
 where = ["."]
 include = [
+  "experiments*",
   "dataset*",
   "evaluation*",
   "experiment_tracking*",

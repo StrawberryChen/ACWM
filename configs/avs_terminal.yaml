@@ -1,0 +1,5 @@
+base: terminal_only.yaml
+experiment: avs_terminal
+output_dir: /content/drive/MyDrive/ACWM/avs_target/outputs/avs_terminal
+wandb:
+  name: avs_terminal_seed42

@@ -13,6 +13,7 @@ import yaml
 
 from evaluation.action_contrastive import diagnostics, make_loader
 from evaluation.planning import PlanningEvaluator
+from evaluation.leworld_planning import training_action_statistics
 from experiment_tracking import ExperimentLogger, append_metrics
 from models.action_contrastive import ActionContrastiveWorldModel, negative_actions, ranking_metrics
 from planner import CEMPlanner
@@ -62,13 +63,30 @@ def checkpoint(path, model, optimizer, scheduler, epoch, config, metrics, histor
 def planning(model, config, device, output, split):
     if config["data"]["action_scale"] != 100.0:
         raise ValueError("swm relative=True requires action_scale=100; use 100 for planning")
-    planner = CEMPlanner(**config["planner"])
+    settings = dict(config["planner"])
+    action_stats = None
+    if config.get("planning_protocol") == "leworld_raw_step":
+        action_stats = training_action_statistics(config["data"]["train_paths"])
+        settings["action_mean"], settings["action_std"] = action_stats
+        print("LeWorld control profile: 25 raw predictions; execute 25 then replan. "
+              "Predictor remains single-step; no five-action-block retraining.")
+        print(f"Train-only action normalization: mean={action_stats[0]}, std={action_stats[1]}")
+    planner = CEMPlanner(**settings)
     evaluator = PlanningEvaluator(planner, config["environment"], 1, 2, device,
                                   dataset_paths=config["data"][f"{split}_paths"])
     model.eval()
     result = evaluator.evaluate(model, episodes=config["validation"]["planning_episodes"],
                                 videos_to_save=config["validation"]["planning_videos"], video_dir=output)
     metrics = {f"planning/{key}": value for key, value in result.items() if isinstance(value, (int, float))}
+    metrics.update({"planning/horizon_raw_steps": planner.horizon,
+                    "planning/replan_raw_steps": config["environment"]["replan_interval"],
+                    "planning/eval_budget_raw_steps": config["environment"]["max_steps"],
+                    "planning/cost_is_latent_mse_sum": int(planner.cost_type == "latent_mse_sum"),
+                    "planning/clamp_actions": int(planner.clamp_actions)})
+    if action_stats is not None:
+        for i in range(2):
+            metrics[f"planning/action_mean_{i}"] = action_stats[0][i]
+            metrics[f"planning/action_std_{i}"] = action_stats[1][i]
     # Measure latent-only throughput, excluding rendering/encoding/environment time.
     b, h = config["planner"]["population"], config["planner"]["horizon"]
     o = torch.randn(b, model.latent_dim, device=device)

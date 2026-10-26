@@ -1,0 +1,54 @@
+seed: 42
+device: cuda
+output_dir: /content/drive/MyDrive/ACWM/avs_target/outputs/avs_flow
+data:
+  train_paths: []
+  val_paths: []
+  test_paths: []
+  action_scale: 512.0
+  batch_size: 64
+  num_workers: 2
+  cache_episodes: 8
+  stats_batch_size: 32
+target:
+  kind: avs
+  resolution: 6
+  directions: 8
+  smoothing: true
+  shifts: [1, 2, 4]
+  projection_dim: 288
+  seed: 42
+  pair_chunk: 64
+model:
+  latent_dim: 128
+  horizon: 16
+  model_dim: 256
+  layers: 4
+  heads: 8
+  dropout: 0.0
+training:
+  epochs: 100
+  learning_rate: 0.0003
+  weight_decay: 0.0
+  gradient_clip_norm: 1.0
+validation:
+  interval: 5
+  samples: 512
+  generation_samples: 64
+  horizons: [1, 2, 4, 8, 16]
+  flow_steps: [4, 8, 16, 32]
+  visualization_examples: 50
+  comparison_videos: 4
+  zero_motion_threshold: 0.000001
+probe:
+  max_train_samples: 10000
+  max_eval_samples: 2000
+  epochs: 100
+  batch_size: 256
+  hidden_dim: 128
+  learning_rate: 0.001
+wandb:
+  enabled: true
+  project: acwm
+  name: avs_flow_seed42
+  mode: online

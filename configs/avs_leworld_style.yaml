@@ -1,0 +1,8 @@
+base: avs_flow.yaml
+output_dir: /content/drive/MyDrive/ACWM/avs_target/outputs/leworld_style
+baseline:
+  sigreg_weight: 0.09
+  knots: 17
+  num_projections: 1024
+wandb:
+  name: avs_leworld_style_seed42

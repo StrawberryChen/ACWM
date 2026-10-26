@@ -109,3 +109,18 @@ agent/environment latent prediction error；planning MP4 展示 CEM 在环境中
 第二个独立实验采用真实动作分支的条件高斯 NLL、行匹配与真实 latent SIGReg。
 默认每 5 epoch 验证，100 epoch 结束后自动执行一次 test planning；原实验保持不变。
 新数据准备和训练流程见 [ACTION_MATCHING_V2.md](ACTION_MATCHING_V2.md)。
+
+这两条单 raw-step 管线的 planning 时间预算、CEM 参数与终点 MSE 成本已适配
+LeWorld Push-T。模型仍然单步递推，不等同于官方五动作块 Predictor；旧 Colab
+配置迁移及未对齐项目见 [LEWORLD_PLANNING_ALIGNMENT.md](LEWORLD_PLANNING_ALIGNMENT.md)。
+
+## AVS-Target 独立原型
+
+新增固定 motion target + 随机初始化 CNN CSE + 条件 Flow Matching 管线，
+主实验只有 FM loss，不使用 pretrained/teacher/anti-collapse 正则，不运行 planning。
+三种 target ablation、独立 LeWorld-style loss control、生成评估和 frozen probes
+的说明与 Colab 命令见 [AVS_TARGET.md](AVS_TARGET.md)。
+
+AVS-only 保持不变，新增固定 terminal measurement 的 Terminal-only / AVS+Terminal。
+两分支分别 mean 后加权 FM，prediction/probe 审核后才显式运行 terminal-space CEM/MPC。
+配置、诊断流程及命令见 [AVS_TERMINAL.md](AVS_TERMINAL.md)。
