@@ -145,8 +145,31 @@ def test_train_resume_evaluate_probe_and_review_provenance(tmp_path, monkeypatch
     monkeypatch.setattr(sys, "argv", ["train", "--config", str(path), "--checkpoint", str(checkpoint), "--resume"])
     joint_train.main()
     assert torch.load(checkpoint, weights_only=False)["epoch"] == 2
+    # Simulate the old Colab checkpoint/stats format and a Drive mtime-only change.
+    legacy = torch.load(checkpoint, weights_only=False)
+    for record in legacy["train_sources"]:
+        record.pop("sha256", None)
+    torch.save(legacy, checkpoint)
+    if experiment == "avs_terminal":
+        stats_path = output/"avs_stats.json"
+        stats = json.loads(stats_path.read_text())
+        for record in stats["train_sources"]:
+            record.pop("sha256", None)
+        stats_path.write_text(json.dumps(stats))
+    for record in legacy["train_sources"]:
+        os.utime(record["path"], ns=(record["mtime_ns"]+10_000_000, record["mtime_ns"]+10_000_000))
+    original_config_bytes = (output/"config.yaml").read_bytes()
+    original_target = legacy["motion"]
+    config["evaluation_note"] = "must not overwrite training configuration"
+    path.write_text(yaml.safe_dump(config))
     monkeypatch.setattr(sys, "argv", ["eval", "--config", str(path), "--checkpoint", str(checkpoint), "--mode", "evaluate"])
     joint_train.main()
+    assert (output/"config.yaml").read_bytes() == original_config_bytes
+    after_evaluation = torch.load(checkpoint, weights_only=False)
+    assert after_evaluation["epoch"] == 2
+    if original_target is not None:
+        for key in ("mean", "std"):
+            torch.testing.assert_close(after_evaluation["motion"][key], original_target[key])
     monkeypatch.setattr(sys, "argv", ["probe", "--config", str(path), "--checkpoint", str(checkpoint)])
     probe.main()
     evaluation = output/"evaluation_val/report.json"

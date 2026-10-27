@@ -87,6 +87,16 @@ terminal spec、AVS 统计量、原始 random CSE 和训练数据 provenance 都
 对比 trained/random CSE 和 constant baseline，Linear/MLP 头只用 train 拟合、val 选择。
 probe 和独立 evaluate 报告保存 checkpoint SHA256，用于核对规划的权重。
 
+### Colab 数据来源兼容
+
+独立 evaluate 不再要求训练文件的绝对路径/mtime 完全不变，也不会重新拟合 checkpoint 的 target normalization。
+修改时间不是数据内容身份；新训练保存流式 SHA256，续训以内容核对，允许相同内容复制/迁移。
+旧 checkpoint 没有 hash：续训只能核对原路径和文件大小，忽略 mtime 并明确警告无法证明内容完全相同。
+真正不同的数据应使用新 output-dir，不应靠跳过检查继续训练。
+独立验证配置另存 evaluation_val/config.yaml，不覆盖训练 config.yaml。
+仍严格检查模型结构、固定算子、动作尺度，以及 checkpoint 与 avs_stats.json 的 mean/std 一致。
+probe 本身没有训练文件 mtime 校验；应先完成 evaluate，再运行原 probe 命令。
+
 ## Colab：先做 Phase 1-5
 
 已有 `configs/colab_avs_flow.yaml` 和 raw-step 数据时，不必重新准备或复制数据：

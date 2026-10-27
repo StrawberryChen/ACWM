@@ -11,7 +11,7 @@ from tqdm.auto import tqdm
 import yaml
 
 from experiment_tracking import ExperimentLogger, append_metrics
-from .data import file_sha256, load_config, loader, source_signature, validate_splits
+from .data import check_source_provenance, file_sha256, load_config, loader, source_signature, validate_splits
 from .joint_evaluate import evaluate_joint, noise_for, targets_for, visualize_terminal
 from .joint_model import JointFlowWorldModel, joint_flow_loss, joint_training_pair
 from .targets import FixedMotionTarget, fit_statistics
@@ -33,6 +33,8 @@ def load_weights(saved, config, model, terminal, motion):
     if (saved["config"]["model"] != config["model"] or saved["config"]["experiment"] != config["experiment"]
             or saved["terminal_spec"] != terminal.spec):
         raise ValueError("checkpoint architecture/terminal measurement mismatch")
+    if saved["config"]["data"]["action_scale"] != config["data"]["action_scale"]:
+        raise ValueError("checkpoint action_scale differs; do not reinterpret normalized actions")
     if (saved["motion_spec"] is None) != (motion is None):
         raise ValueError("checkpoint motion branch mismatch")
     if motion is not None and saved["motion_spec"] != motion.spec:
@@ -110,7 +112,7 @@ def main():
     random.seed(config["seed"])
     np.random.seed(config["seed"])
     paths = validate_splits(config)
-    provenance = source_signature(paths["train"])
+    provenance = source_signature(paths["train"], content_hash=args.mode == "train")
     device = torch.device(config["device"])
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("enable a GPU runtime")
@@ -125,8 +127,7 @@ def main():
     if args.checkpoint:
         saved = torch.load(args.checkpoint, map_location=device, weights_only=False)
         load_weights(saved, config, model, terminal, motion)
-        if saved["train_sources"] != provenance:
-            raise ValueError("checkpoint training dataset provenance differs")
+        check_source_provenance(saved["train_sources"], provenance, "checkpoint training dataset", training=args.mode == "train")
         initial_cse = saved["initial_cse"]
         if args.resume:
             if saved["config"]["loss"] != config["loss"]:
@@ -147,8 +148,7 @@ def main():
         if stats_path.exists():
             before = motion.std.clone(), motion.mean.clone()
             stats = motion.load_statistics(stats_path)
-            if stats["train_sources"] != provenance:
-                raise ValueError("AVS stats dataset differs")
+            check_source_provenance(stats["train_sources"], provenance, "AVS target statistics", training=args.mode == "train")
             if args.checkpoint:
                 torch.testing.assert_close(before[0], motion.std)
                 torch.testing.assert_close(before[1], motion.mean)
@@ -159,8 +159,10 @@ def main():
             stats_config["data"]["batch_size"] = config["data"]["stats_batch_size"]
             stats_loader, _ = loader(stats_config, "train", horizon=1)
             fit_statistics(motion, tqdm(stats_loader, desc="Fixed AVS train statistics"), device, stats_path, provenance)
-    (output/"terminal_spec.json").write_text(json.dumps(terminal.spec, indent=2))
-    (output/"config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
+    metadata_output = output if args.mode == "train" else output/f"evaluation_{args.split}"
+    metadata_output.mkdir(parents=True, exist_ok=True)
+    (metadata_output/"terminal_spec.json").write_text(json.dumps(terminal.spec, indent=2))
+    (metadata_output/"config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
     split = args.split if args.mode == "evaluate" else "val"
     validation, _ = loader(config, split, limit=config["validation"]["samples"])
     if len(validation.dataset) < 2:

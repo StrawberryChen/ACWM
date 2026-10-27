@@ -11,7 +11,7 @@ from tqdm.auto import tqdm
 import yaml
 
 from experiment_tracking import ExperimentLogger, append_metrics
-from .data import load_config, loader, source_signature, validate_splits
+from .data import check_source_provenance, load_config, loader, source_signature, validate_splits
 from .evaluate import evaluate
 from .flow import flow_loss, flow_training_pair
 from .model import AVSFlowWorldModel
@@ -122,13 +122,12 @@ def main():
                 torch.cuda.set_rng_state_all([v.cpu() for v in saved["cuda_rng"]])
     elif args.resume or args.mode != "train":
         raise ValueError("--checkpoint required")
-    provenance = source_signature(paths["train"])
+    provenance = source_signature(paths["train"], content_hash=args.mode == "train")
     stats_path = output/"avs_stats.json"
     if stats_path.exists():
         before = deepcopy(operator.state_dict())
         stats = operator.load_statistics(stats_path)
-        if stats["train_sources"] != provenance:
-            raise ValueError("train sources changed; use a new experiment output directory")
+        check_source_provenance(stats["train_sources"], provenance, "fixed target statistics", training=args.mode == "train")
         if args.checkpoint:
             for key in ("mean", "std"):
                 torch.testing.assert_close(operator.state_dict()[key], before[key])
@@ -141,7 +140,9 @@ def main():
         print("Fitting FIXED target statistics on unique training transitions only...")
         fit_statistics(operator, tqdm(stats_loader, desc="Target train statistics"), device, stats_path, provenance)
     config["target_output_dim"] = operator.output_dim
-    (output/"config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
+    metadata_output = output if args.mode == "train" else output/f"evaluation_{args.split}"
+    metadata_output.mkdir(parents=True, exist_ok=True)
+    (metadata_output/"config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
     logger = ExperimentLogger(config["wandb"], config)
     try:
         split = args.split if args.mode == "evaluate" else "val"

@@ -1,8 +1,10 @@
 """Episode-disjoint sliding windows; no simulator state in model minibatches."""
 from collections import OrderedDict
+from collections import Counter
 from copy import deepcopy
 import glob
 import hashlib
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -49,9 +51,41 @@ class TrajectoryWindows(ActionContrastiveDataset):
         return self._episodes[index]
 
 
-def source_signature(paths):
-    return [{"path": str(Path(p).resolve()), "size": Path(p).stat().st_size,
-             "mtime_ns": Path(p).stat().st_mtime_ns} for p in paths]
+def source_signature(paths, content_hash=True):
+    records = []
+    for path in paths:
+        info = Path(path).stat()
+        record = {"path": str(Path(path).resolve()), "size": info.st_size, "mtime_ns": info.st_mtime_ns}
+        if content_hash:
+            record["sha256"] = file_sha256(path)
+        records.append(record)
+    return records
+
+
+def check_source_provenance(recorded, current, context, training=True):
+    """Content identity for new runs; legacy metadata migration, not mtime identity.
+
+    Evaluation does not train on these files and must not require them to retain
+    their original filesystem metadata. Target/operator compatibility is separate.
+    """
+    if recorded == current:
+        return
+    hashed = bool(recorded and current) and all("sha256" in row for row in recorded+current)
+    if hashed:
+        identical = Counter(row["sha256"] for row in recorded) == Counter(row["sha256"] for row in current)
+    else:
+        # Old checkpoints do not contain enough information to prove byte identity.
+        # Ignore unstable mtime ONLY; keep legacy path/size guards for training.
+        key = lambda row: (str(Path(row["path"]).resolve()), int(row["size"]))
+        identical = Counter(map(key, recorded)) == Counter(map(key, current))
+    if training and not identical:
+        raise ValueError(f"{context}: training data content/provenance differs; use the original data or a new output directory")
+    if training and not hashed:
+        warnings.warn(f"{context}: legacy provenance has no content hash; paths/sizes match, ignoring modification times. "
+                      "Content identity cannot be proven for this old checkpoint/statistics file.", UserWarning)
+    elif not training and not identical:
+        warnings.warn(f"{context}: configured training-file metadata differs; evaluation keeps the checkpoint's "
+                      "fixed target normalization and does not retrain/refit it.", UserWarning)
 
 
 def file_sha256(path):

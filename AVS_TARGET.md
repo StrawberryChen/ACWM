@@ -45,7 +45,9 @@ RGB→灰度→可选固定 Gaussian smoothing；temporal difference 拆分 ON/O
 算子无 Parameter，计算全程 no_grad；不接受 Flow loss 的梯度。
 
 每通道 mean/std 只拟合 train 的 UNIQUE adjacent transitions，不对重叠窗口重复计数。
-std 下限 1e-6。`avs_stats.json` 保存算子 fingerprint、来源路径/大小/mtime、mean/std。
+std 下限 1e-6。`avs_stats.json` 保存算子 fingerprint、来源路径/大小/mtime、内容 SHA256、mean/std。
+新运行按内容 hash 校验而不依赖 mtime；旧文件仅记录路径/大小时提供带警告的兼容处理。
+独立 evaluate 复用 checkpoint target normalization，不要求训练文件 metadata 完全不变。
 验证/生成/恢复复用同一统计量。改 target、分辨率、方向数或训练数据时使用新 output-dir。
 
 ## 唯一训练目标
