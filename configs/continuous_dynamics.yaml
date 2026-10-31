@@ -1,0 +1,48 @@
+experiment: continuous_dynamics
+seed: 42
+device: cuda
+output_dir: /content/drive/MyDrive/ACWM/continuous_dynamics/directional
+data:
+  train_paths: []
+  val_paths: []
+  test_paths: []
+  action_mode: relative
+  action_scale: 512.0
+  batch_size: 64
+  num_workers: 2
+  cache_episodes: 8
+model:
+  image_size: 96
+  patch_size: 16
+  latent_dim: 192
+  hidden_dim: 512
+  integration_steps: 4
+loss:
+  mode: directional
+  margin: 0.1
+  weight: 1.0
+  eps: 0.00000001
+training:
+  epochs: 100
+  learning_rate: 0.0003
+  weight_decay: 0.0
+  gradient_clip_norm: 1.0
+validation:
+  samples: 1024
+  action_samples: 8
+  action_low: -1.0
+  action_high: 1.0
+  visualization_interval: 5
+  visualization_samples: 512
+probe:
+  max_train_samples: 10000
+  max_eval_samples: 2000
+  epochs: 100
+  batch_size: 256
+  hidden_dim: 128
+  learning_rate: 0.001
+wandb:
+  enabled: true
+  project: acwm
+  name: continuous_directional_seed42
+  mode: online

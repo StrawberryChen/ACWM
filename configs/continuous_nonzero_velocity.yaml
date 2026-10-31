@@ -1,0 +1,6 @@
+base: continuous_dynamics.yaml
+output_dir: /content/drive/MyDrive/ACWM/continuous_dynamics/nonzero_velocity
+loss:
+  mode: nonzero_velocity
+wandb:
+  name: continuous_nonzero_velocity_seed42

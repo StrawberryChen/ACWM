@@ -1,0 +1,6 @@
+base: continuous_dynamics.yaml
+output_dir: /content/drive/MyDrive/ACWM/continuous_dynamics/prediction_only
+loss:
+  mode: prediction_only
+wandb:
+  name: continuous_prediction_only_seed42
