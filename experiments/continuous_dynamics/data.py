@@ -2,22 +2,69 @@
 from torch.utils.data import DataLoader, Subset
 import torch
 import numpy as np
+from torch.nn import functional as F
 from experiments.avs_target.data import TrajectoryWindows, load_config, validate_splits
+
+
+class RawTransitionDataset(TrajectoryWindows):
+    """One shared image conversion for training, probes and episode plots.
+
+    Infer floating-point range PER EPISODE, never per minibatch/window: a dark
+    byte-scale window must not suddenly be interpreted as normalized RGB.
+    """
+    def __init__(self, paths, image_size, cache_episodes, action_scale, frame_value_range="auto"):
+        if frame_value_range not in {"auto", "unit", "byte"}:
+            raise ValueError("frame_value_range must be auto, unit, or byte")
+        super().__init__(paths, horizon=1, cache_episodes=cache_episodes, action_scale=action_scale)
+        self.image_size, self.frame_scales = image_size, []
+        for path in self.paths:
+            with np.load(path) as episode:
+                if "action_scale" not in episode:
+                    raise ValueError(f"{path}: explicit action_scale metadata required; do not guess action units")
+                frames = episode["frames"]
+                if frames.ndim != 4 or not (frames.shape[-1] == 3 or frames.shape[1] == 3):
+                    raise ValueError(f"{path}: expected RGB [T,H,W,3] or [T,3,H,W]")
+                is_byte = frames.dtype == np.uint8
+                if not is_byte and not np.issubdtype(frames.dtype, np.floating):
+                    raise ValueError(f"{path}: RGB must be uint8 or floating point, got {frames.dtype}")
+                if not np.isfinite(frames).all():
+                    raise ValueError(f"{path}: RGB contains NaN or Inf")
+                low, high = float(frames.min()), float(frames.max())
+                if low < 0 or high > 255:
+                    raise ValueError(f"{path}: RGB range [{low}, {high}] is outside [0,255]")
+                if frame_value_range == "unit":
+                    if is_byte or high > 1:
+                        raise ValueError(f"{path}: unit range requires floating RGB in [0,1]")
+                    scale = 1.
+                elif frame_value_range == "byte":
+                    scale = 255.
+                else:
+                    scale = 255. if is_byte or high > 1 else 1.
+                self.frame_scales.append(scale)
+
+    def prepare_frames(self, frames, episode):
+        # Raw [T,H,W,3] or [T,3,H,W] -> float32 [T,3,H,W] in [0,1].
+        image = torch.from_numpy(frames.astype(np.float32, copy=True))
+        if image.shape[-1] == 3:
+            image = image.permute(0, 3, 1, 2)
+        image = image.float()/self.frame_scales[episode]
+        return F.interpolate(image, (self.image_size, self.image_size), mode="bilinear", align_corners=False)
+
+    def __getitem__(self, index):
+        episode, t = self.indices[index]
+        frames, actions = self.episode(episode)
+        return {"frames": self.prepare_frames(frames[t:t+2], episode),
+                "actions": torch.from_numpy(actions[t:t+1].copy()).float(),
+                "episode": episode, "timestep": t}
 
 
 def loader(config, split, limit=None, shuffle=False):
     settings = config["data"]
     if settings["action_mode"] != "relative":
         raise ValueError("current prepared NPZ actions are relative, not absolute target positions")
-    dataset = TrajectoryWindows(settings[f"{split}_paths"], horizon=1,
-                                cache_episodes=settings["cache_episodes"], action_scale=settings["action_scale"])
-    for path in dataset.paths:
-        with np.load(path) as episode:
-            if "action_scale" not in episode:
-                raise ValueError(f"{path}: explicit action_scale metadata required; do not guess action units")
-            if episode["frames"].dtype != np.uint8:
-                raise ValueError(f"{path}: prepared raw RGB must be uint8; avoid double division by 255")
-    dataset.image_size = config["model"]["image_size"]
+    dataset = RawTransitionDataset(settings[f"{split}_paths"], config["model"]["image_size"],
+                                   settings["cache_episodes"], settings["action_scale"],
+                                   settings.get("frame_value_range", "auto"))
     selected = dataset
     if limit and len(dataset) > limit:
         indices = torch.randperm(len(dataset), generator=torch.Generator().manual_seed(config["seed"]))[:limit]

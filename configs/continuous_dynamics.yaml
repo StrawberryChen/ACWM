@@ -8,6 +8,7 @@ data:
   test_paths: []
   action_mode: relative
   action_scale: 512.0
+  frame_value_range: auto  # uint8 / float [0,1] / float [0,255], per-episode detection
   batch_size: 64
   num_workers: 2
   cache_episodes: 8

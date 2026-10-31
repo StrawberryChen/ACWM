@@ -51,13 +51,9 @@ def visualize(model, dataset, config, output, epoch, device):
         print("No simulator labels: physical-color PCA skipped (training unaffected).")
     # Entire first validation episode in temporal order, not shuffled minibatches.
     raw, _ = dataset.episode(0)
-    from torch.nn import functional as F
-    image = torch.from_numpy(raw.copy())
-    if image.shape[-1] == 3:
-        image = image.permute(0, 3, 1, 2)
     trajectory = []
-    for chunk in image.split(config["data"]["batch_size"]):
-        chunk = F.interpolate(chunk.to(device).float()/255., (dataset.image_size, dataset.image_size), mode="bilinear", align_corners=False)
+    for start in range(0, len(raw), config["data"]["batch_size"]):
+        chunk = dataset.prepare_frames(raw[start:start+config["data"]["batch_size"]], 0).to(device)
         trajectory.append(model.encoder(chunk).cpu())
     trajectory = torch.cat(trajectory)
     xy_trajectory = project(trajectory)

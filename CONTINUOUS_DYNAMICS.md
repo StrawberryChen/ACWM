@@ -12,6 +12,13 @@
 不能把旧的 packed-action 数据直接传进来。Dataset 不向模型 minibatch 返回 simulator state。
 states 仅由独立 probe 和 read-only 可视化读取，绝不进入 world-model loss。
 
+RGB 支持 uint8 [0,255]、浮点 [0,1]、浮点 [0,255]；训练、probe、episode 可视化
+复用同一转换。`data.frame_value_range: auto` 按完整 episode 判断浮点范围，
+不是按窗口判断，避免暗色窗口尺度跳变。float [0,1] 不再除以255。
+若原本 byte-scale 的浮点 episode 恰好所有像素都 ≤1，自动判断存在歧义，
+请明确配置 `frame_value_range: byte`；`unit` 强制浮点 [0,1]。
+NaN/Inf、负数、越界和非支持 dtype 会明确报错，不静默 clip 或 min-max normalize。
+
 | 阶段 | shape |
 |---|---|
 | 前后两帧 RGB，float [0,1] | `[B,2,3,96,96]` |

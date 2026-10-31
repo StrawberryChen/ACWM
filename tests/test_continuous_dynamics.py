@@ -150,12 +150,60 @@ class ContinuousDynamicsTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_splits(config)
 
+    def test_rgb_formats_use_one_scale_for_whole_episode(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = self.fixture(Path(temp))
+            path = Path(config["data"]["val_paths"][0])
+            with np.load(path) as data:
+                contents = {k: data[k] for k in data.files}
+            original = contents["frames"].copy()
+            expected = torch.from_numpy(original[:2]).permute(0, 3, 1, 2).float()/255
+            for frames in (original, original.astype("float32")/255, original.astype("float32"),
+                           (original.astype("float32")/255).transpose(0, 3, 1, 2)):
+                np.savez(path, **{**contents, "frames": frames})
+                _, dataset = loader(config, "val")
+                torch.testing.assert_close(dataset[0]["frames"], expected)
+                torch.testing.assert_close(dataset.prepare_frames(frames[:2], 0), expected)
+            # Dark first window must still use byte scale, inferred from later frames.
+            dark = np.zeros_like(original, dtype="float32")
+            dark[:2] = 1.
+            dark[3] = 255.
+            np.savez(path, **{**contents, "frames": dark})
+            _, dataset = loader(config, "val")
+            self.assertAlmostEqual(float(dataset[0]["frames"].max()), 1/255, places=7)
+            # Explicit byte override handles an entirely dark float-byte episode.
+            dark[:] = 1.
+            np.savez(path, **{**contents, "frames": dark})
+            config["data"]["frame_value_range"] = "byte"
+            _, dataset = loader(config, "val")
+            self.assertAlmostEqual(float(dataset[0]["frames"].max()), 1/255, places=7)
+
+    def test_invalid_rgb_is_rejected_not_clipped(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = self.fixture(Path(temp))
+            path = Path(config["data"]["val_paths"][0])
+            with np.load(path) as data:
+                contents = {k: data[k] for k in data.files}
+            for invalid in (float("nan"), float("inf"), -.01, 256.):
+                frames = contents["frames"].astype("float32")
+                frames[0, 0, 0, 0] = invalid
+                np.savez(path, **{**contents, "frames": frames})
+                with self.assertRaises(ValueError):
+                    loader(config, "val")
+
     def test_end_to_end_train_evaluate_probe_and_resume(self):
         from experiments.continuous_dynamics.train import main
         from experiments.continuous_dynamics.probe import main as probe
         with tempfile.TemporaryDirectory() as temp, contextlib.redirect_stdout(io.StringIO()):
             root = Path(temp)
             config = self.fixture(root)
+            # Real entry points must accept both floating conventions, including plots/probe.
+            for split, scale in (("train", 1.), ("val", 255.), ("test", 255.)):
+                episode_path = Path(config["data"][f"{split}_paths"][0])
+                with np.load(episode_path) as data:
+                    contents = {k: data[k] for k in data.files}
+                contents["frames"] = contents["frames"].astype("float32")/scale
+                np.savez(episode_path, **contents)
             path = root/"config.yaml"
             path.write_text(yaml.safe_dump(config))
             with patch("sys.argv", ["train", "--config", str(path)]):
