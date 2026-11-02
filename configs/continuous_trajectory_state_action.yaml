@@ -1,0 +1,6 @@
+base: continuous_trajectory_action.yaml
+output_dir: /content/drive/MyDrive/ACWM/continuous_trajectory/state_action
+model:
+  direction_mode: state_action
+wandb:
+  name: continuous_trajectory_state_action_seed42

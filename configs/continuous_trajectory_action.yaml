@@ -1,0 +1,11 @@
+base: continuous_dynamics.yaml
+experiment: continuous_trajectory
+output_dir: /content/drive/MyDrive/ACWM/continuous_trajectory/action_only
+model:
+  horizon: 16
+  direction_mode: action_only
+  action_layers: 2
+  action_heads: 3
+  direction_eps: 0.00000001
+wandb:
+  name: continuous_trajectory_action_seed42

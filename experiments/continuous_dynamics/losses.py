@@ -10,6 +10,14 @@ def reference_progress(velocities, eps=1e-8):
     return (velocities*direction[:, None]).sum(-1)  # [B,K]; ONLY d detached
 
 
+def output_progress(output, eps=1e-8):
+    if "direction" not in output:
+        return reference_progress(output["velocities"], eps)
+    velocity, direction = output["velocities"], output["direction"]
+    assert velocity.ndim == 4 and direction.shape == (len(velocity), velocity.shape[-1])
+    return (velocity*direction.detach()[:, None, None]).sum(-1)  # [B,H,K]
+
+
 class DirectionalProgressLoss(nn.Module):
     def __init__(self, margin=.1, eps=1e-8):
         super().__init__()
@@ -27,7 +35,7 @@ def objective(output, mode="directional", margin=.1, weight=1., eps=1e-8):
     prediction = F.mse_loss(output["prediction"], output["target"])  # NO target detach
     velocity = output["velocities"]  # [B,K,D]
     if mode == "directional":
-        progress = DirectionalProgressLoss(margin, eps)(velocity)
+        progress = F.relu(margin-output_progress(output, eps)).mean()
     elif mode == "nonzero_velocity":
         progress = F.relu(margin-velocity.norm(dim=-1)).mean()
     else:

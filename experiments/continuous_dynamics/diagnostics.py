@@ -1,7 +1,7 @@
 """Read-only diagnostics; no diagnostic contributes to the training objective."""
 import torch
 from torch.nn import functional as F
-from .losses import objective, reference_progress
+from .losses import objective, output_progress
 
 
 def summary(values, prefix):
@@ -46,17 +46,39 @@ class ActionSensitivityDiagnostics:
         return {"action/velocity_distance": float((velocity[:, i]-velocity[:, j]).norm(dim=-1).mean()),
                 "action/velocity_cosine": float(F.cosine_similarity(velocity[:, i], velocity[:, j], dim=-1).mean())}
 
+    @staticmethod
+    def trajectory(model, state, config, generator, horizon):
+        n = config["action_samples"]
+        if n < 2 or config["action_high"] <= config["action_low"]:
+            raise ValueError("at least two actions and ordered bounds required")
+        actions = torch.rand(len(state)*n, horizon, 2, device=state.device, generator=generator)
+        actions = config["action_low"]+(config["action_high"]-config["action_low"])*actions
+        starts = state[:, None].expand(-1, n, -1).reshape(-1, state.shape[-1])
+        context, embeddings, _, direction = model.condition(starts, actions)
+        velocity = model.field(starts, embeddings[:, 0], context, direction).reshape(len(state), n, -1)
+        direction = direction.reshape(len(state), n, -1)
+        i, j = torch.triu_indices(n, n, offset=1, device=state.device)
+        return {"action/velocity_distance": float((velocity[:, i]-velocity[:, j]).norm(dim=-1).mean()),
+                "action/velocity_cosine": float(F.cosine_similarity(velocity[:, i], velocity[:, j], dim=-1).mean()),
+                "direction/action_sequence_distance": float((direction[:, i]-direction[:, j]).norm(dim=-1).mean())}
+
 
 @torch.no_grad()
 def evaluate(model, batches, config, device):
     model.eval()
     sums, count, collected = {}, 0, {k: [] for k in ("start", "target", "prediction", "states", "velocities", "actions")}
+    trajectory = hasattr(model, "direction_head")
+    if trajectory:
+        collected.update(direction=[], direction_raw=[])
     generator = torch.Generator(device=device).manual_seed(config["seed"]+100)
     for batch in batches:
         frames, actions = batch["frames"].to(device), batch["actions"].to(device)
         output = model(frames, actions)
         metrics = {f"val/{k}": float(v) for k, v in objective(output, **config["loss"]).items()}
-        metrics.update(ActionSensitivityDiagnostics.compute(model.field, output["start"], config["validation"], generator))
+        if trajectory:
+            metrics.update(ActionSensitivityDiagnostics.trajectory(model, output["start"], config["validation"], generator, actions.shape[1]))
+        else:
+            metrics.update(ActionSensitivityDiagnostics.compute(model.field, output["start"], config["validation"], generator))
         for key, value in metrics.items():
             sums[key] = sums.get(key, 0.)+value*len(frames)
         count += len(frames)
@@ -67,22 +89,37 @@ def evaluate(model, batches, config, device):
     values = {k: torch.cat(v) for k, v in collected.items()}
     metrics = {k: v/count for k, v in sums.items()}
     metrics.update(CollapseDiagnostics.compute(values["start"]))
-    transition = (values["target"]-values["start"]).norm(dim=-1)
+    if trajectory:
+        real_sequence = torch.cat((values["start"][:, None], values["target"]), 1)
+        transition = real_sequence.diff(dim=1).norm(dim=-1)
+        metrics["val/identity_loss"] = float((values["target"]-values["start"][:, None]).square().mean())
+        for h in range(values["target"].shape[1]):
+            metrics[f"val/pred_step_{h+1}"] = float((values["prediction"][:, h]-values["target"][:, h]).square().mean())
+        metrics["direction/raw_norm"] = float(values["direction_raw"].norm(dim=-1).mean())
+        metrics["direction/feature_std"] = float(values["direction"].std(0, correction=0).mean())
+        metrics["direction/velocity_cosine"] = float(F.cosine_similarity(values["velocities"], values["direction"][:, None, None], dim=-1).mean())
+    else:
+        transition = (values["target"]-values["start"]).norm(dim=-1)
     metrics.update(summary(transition, "dynamics/latent_transition_distance"))
     metrics.update(summary(values["velocities"].norm(dim=-1), "dynamics/velocity_norm"))
-    progress = reference_progress(values["velocities"], config["loss"]["eps"])
+    progress = output_progress(values, config["loss"]["eps"])
     metrics.update(summary(progress, "dynamics/progress"))
     metrics["dynamics/progress_violation_ratio"] = float((progress < config["loss"]["margin"]).float().mean())
-    metrics["dynamics/velocity_cosine"] = float(F.cosine_similarity(values["velocities"], values["velocities"][:, :1], dim=-1).mean())
-    metrics["dynamics/zero_reference_ratio"] = float((values["velocities"][:, 0].norm(dim=-1) <= config["loss"]["eps"]).float().mean())
+    reference_velocity = values["velocities"][:, :, :1] if trajectory else values["velocities"][:, :1]
+    metrics["dynamics/velocity_cosine"] = float(F.cosine_similarity(values["velocities"], reference_velocity, dim=-1).mean())
+    reference_norm = values["direction_raw"].norm(dim=-1) if trajectory else values["velocities"][:, 0].norm(dim=-1)
+    metrics["dynamics/zero_reference_ratio"] = float((reference_norm <= config["loss"]["eps"]).float().mean())
     # A global random derangement: even final singleton minibatches get a wrong A.
     order = torch.randperm(count, generator=torch.Generator().manual_seed(config["seed"]+101))
     shuffled = torch.empty_like(order)
     shuffled[order] = order.roll(1)
     error = 0.
     for selected in torch.arange(count).split(config["data"]["batch_size"]):
-        prediction, _, _ = model.integrator(model.field, values["start"][selected].to(device),
-                                             values["actions"][shuffled[selected], 0].to(device))
+        if trajectory:
+            prediction = model.rollout(values["start"][selected].to(device), values["actions"][shuffled[selected]].to(device))
+        else:
+            prediction, _, _ = model.integrator(model.field, values["start"][selected].to(device),
+                                                 values["actions"][shuffled[selected], 0].to(device))
         error += float((prediction-values["target"][selected].to(device)).square().mean())*len(selected)
     metrics["action/shuffle_loss"] = error/count
     metrics["action/shuffle_loss_delta"] = error/count-metrics["val/loss_pred"]

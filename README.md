@@ -3,6 +3,9 @@
 新增独立实验：[`Continuous Latent Dynamics v1`](CONTINUOUS_DYNAMICS.md)
 （随机 ViT + action-conditioned vector field + Euler integration + Directional Progress；无额外 anti-collapse loss，第一阶段无 planning）。旧版本入口保持不变。
 
+Trajectory 扩展：[`两个可训练方向版本`](CONTINUOUS_TRAJECTORY.md)
+（Action-only 与 State+Action；完整 open-loop 多步预测，独立 YAML 和输出目录）。
+
 ACWM 将世界 latent 拆成可控的 **Agent State** 与任务环境对应的
 **Environment State**。其结构约束是：
 

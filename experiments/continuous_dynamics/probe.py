@@ -9,14 +9,13 @@ from experiment_tracking import ExperimentLogger
 from experiments.avs_target.probe import fit_probes
 from experiments.avs_target.data import file_sha256
 from .data import load_config, loader, validate_splits
-from .model import ContinuousWorldModel
-from .train import load_checkpoint
+from .train import load_checkpoint, build_model
 
 
 @torch.no_grad()
 def extract(encoder, config, split, limit, device):
     import numpy as np
-    batches, dataset = loader(config, split, limit=limit)
+    batches, dataset = loader(config, split, limit=limit, horizon=1)
     labels = {}
     for i, path in enumerate(dataset.paths):
         with np.load(path) as data:
@@ -47,7 +46,7 @@ def main():
     validate_splits(config)
     torch.manual_seed(config["seed"])
     device = torch.device(config["device"])
-    model = ContinuousWorldModel(**config["model"]).to(device)
+    model = build_model(config).to(device)
     saved = load_checkpoint(args.checkpoint, config, model)
     encoder = model.encoder.requires_grad_(False).eval()
     before = deepcopy(encoder.state_dict())

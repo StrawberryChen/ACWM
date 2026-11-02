@@ -19,6 +19,13 @@ from .diagnostics import evaluate
 from .visualize import visualize
 
 
+def build_model(config):
+    if config.get("experiment") == "continuous_trajectory":
+        from .trajectory_model import TrajectoryWorldModel
+        return TrajectoryWorldModel(**config["model"])
+    return ContinuousWorldModel(**config["model"])
+
+
 def train_epoch(model, batches, optimizer, config, device):
     model.train()
     sums, count = {}, 0
@@ -30,11 +37,18 @@ def train_epoch(model, batches, optimizer, config, device):
             raise FloatingPointError("non-finite continuous dynamics loss")
         optimizer.zero_grad(set_to_none=True)
         losses["loss_total"].backward()
+        gradient_metrics = {}
+        for name in ("direction_head", "action_trajectory"):
+            if hasattr(model, name):
+                norm = sum(float(p.grad.detach().square().sum()) for p in getattr(model, name).parameters() if p.grad is not None)**.5
+                gradient_metrics[f"{name}_gradient_norm"] = norm
         torch.nn.utils.clip_grad_norm_(model.parameters(), config["training"]["gradient_clip_norm"], error_if_nonfinite=True)
         optimizer.step()
         n = len(batch["frames"])
         for key, value in losses.items():
             sums[key] = sums.get(key, 0.)+float(value.detach())*n
+        for key, value in gradient_metrics.items():
+            sums[key] = sums.get(key, 0.)+value*n
         count += n
         progress.set_postfix(pred=f"{sums['loss_pred']/count:.6g}", progress=f"{sums['loss_progress']/count:.6g}")
     return {f"train/{key}": value/count for key, value in sums.items()}
@@ -42,7 +56,8 @@ def train_epoch(model, batches, optimizer, config, device):
 
 def load_checkpoint(path, config, model):
     saved = torch.load(path, map_location="cpu", weights_only=False)
-    if saved["config"]["model"] != config["model"] or saved["config"]["loss"] != config["loss"]:
+    if (saved["config"]["model"] != config["model"] or saved["config"]["loss"] != config["loss"]
+            or saved["config"].get("experiment") != config.get("experiment")):
         raise ValueError("checkpoint model/loss mismatch; use matching saved config")
     for key in ("action_mode", "action_scale"):
         if saved["config"]["data"][key] != config["data"][key]:
@@ -99,7 +114,7 @@ def main():
     device = torch.device(config["device"])
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("select a GPU Colab runtime, or explicitly --device cpu for smoke tests")
-    model = ContinuousWorldModel(**config["model"]).to(device)
+    model = build_model(config).to(device)
     saved = load_checkpoint(args.checkpoint, config, model) if args.checkpoint else None
     output = Path(config["output_dir"])
     if args.mode == "evaluate":

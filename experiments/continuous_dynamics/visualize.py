@@ -66,13 +66,22 @@ def visualize(model, dataset, config, output, epoch, device):
     plt.close(fig)
     sample = dataset[0]
     result = model(sample["frames"][None].to(device), sample["actions"][None].to(device))
-    internal, target = project(result["states"][0]), project(result["target"])
+    path = result["states"][0]
+    trajectory_mode = path.ndim == 3  # [H,K+1,D], versus original [K+1,D]
+    if trajectory_mode:
+        path = torch.cat((path[0, :1], path[:, 1:].flatten(0, 1)), 0)
+    internal = project(path)
+    target = project(result["target"][0] if trajectory_mode else result["target"])
     fig, ax = plt.subplots()
     ax.plot(*internal.T, "o-", label="Euler internal path")
     for k, point in enumerate(internal):
         ax.annotate(str(k), point)
-    ax.scatter(*target.T, marker="*", s=150, label="E(real next frame)")
-    ax.set_title("One real step: PCA is diagnostic, not GT for intermediate states")
+    ax.scatter(*target.T, marker="*", s=100, label="E(real future frames)" if trajectory_mode else "E(real next frame)")
+    if trajectory_mode:
+        ax.plot(*target.T, "--", alpha=.5)
+        ax.set_title("Open-loop trajectory: predicted internal path vs real latents")
+    else:
+        ax.set_title("One real step: PCA is diagnostic, not GT for intermediate states")
     ax.legend()
     paths["visualization/internal_integration"] = output/f"internal_{epoch:04d}.png"
     fig.savefig(paths["visualization/internal_integration"])

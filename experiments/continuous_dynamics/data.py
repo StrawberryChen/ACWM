@@ -12,10 +12,10 @@ class RawTransitionDataset(TrajectoryWindows):
     Infer floating-point range PER EPISODE, never per minibatch/window: a dark
     byte-scale window must not suddenly be interpreted as normalized RGB.
     """
-    def __init__(self, paths, image_size, cache_episodes, action_scale, frame_value_range="auto"):
+    def __init__(self, paths, image_size, cache_episodes, action_scale, frame_value_range="auto", horizon=1):
         if frame_value_range not in {"auto", "unit", "byte"}:
             raise ValueError("frame_value_range must be auto, unit, or byte")
-        super().__init__(paths, horizon=1, cache_episodes=cache_episodes, action_scale=action_scale)
+        super().__init__(paths, horizon=horizon, cache_episodes=cache_episodes, action_scale=action_scale)
         self.image_size, self.frame_scales = image_size, []
         for path in self.paths:
             with np.load(path) as episode:
@@ -53,18 +53,19 @@ class RawTransitionDataset(TrajectoryWindows):
     def __getitem__(self, index):
         episode, t = self.indices[index]
         frames, actions = self.episode(episode)
-        return {"frames": self.prepare_frames(frames[t:t+2], episode),
-                "actions": torch.from_numpy(actions[t:t+1].copy()).float(),
+        return {"frames": self.prepare_frames(frames[t:t+self.horizon+1], episode),
+                "actions": torch.from_numpy(actions[t:t+self.horizon].copy()).float(),
                 "episode": episode, "timestep": t}
 
 
-def loader(config, split, limit=None, shuffle=False):
+def loader(config, split, limit=None, shuffle=False, horizon=None):
     settings = config["data"]
     if settings["action_mode"] != "relative":
         raise ValueError("current prepared NPZ actions are relative, not absolute target positions")
     dataset = RawTransitionDataset(settings[f"{split}_paths"], config["model"]["image_size"],
                                    settings["cache_episodes"], settings["action_scale"],
-                                   settings.get("frame_value_range", "auto"))
+                                   settings.get("frame_value_range", "auto"),
+                                   config["model"].get("horizon", 1) if horizon is None else horizon)
     selected = dataset
     if limit and len(dataset) > limit:
         indices = torch.randperm(len(dataset), generator=torch.Generator().manual_seed(config["seed"]))[:limit]
@@ -81,7 +82,10 @@ def resolve(config_path, data_config=None, output_dir=None):
         # Borrow only paths/action units/runtime, NOT old loss/model/validation settings.
         config["data"].update(prepared["data"])
         config["device"] = prepared["device"]
-        config["output_dir"] = str(Path(prepared["output_dir"]).parent/"continuous_dynamics"/config["loss"]["mode"])
+        if config.get("experiment") == "continuous_trajectory":
+            config["output_dir"] = str(Path(prepared["output_dir"]).parent/"continuous_trajectory"/config["model"]["direction_mode"])
+        else:
+            config["output_dir"] = str(Path(prepared["output_dir"]).parent/"continuous_dynamics"/config["loss"]["mode"])
     if output_dir:
         config["output_dir"] = output_dir
     return config
