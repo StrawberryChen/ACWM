@@ -2,5 +2,8 @@ base: continuous_trajectory_action.yaml
 output_dir: /content/drive/MyDrive/ACWM/continuous_trajectory/state_action
 model:
   direction_mode: state_action
+loss:
+  weight: 1.0  # Progress weight for this variant; overrides the action-only config.
+  margin: 0.1  # Minimum velocity projection along the reference direction.
 wandb:
   name: continuous_trajectory_state_action_seed42
