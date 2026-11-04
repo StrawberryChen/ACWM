@@ -105,6 +105,9 @@ def main():
         parser.error("independent evaluation requires --checkpoint")
     if config["training"]["epochs"] < 1 or config["validation"]["visualization_interval"] < 1:
         raise ValueError("positive epochs/visualization interval required")
+    val_interval = config["validation"].setdefault("interval", 1)
+    if type(val_interval) is not int or val_interval < 1:
+        raise ValueError("validation.interval must be a positive integer")
     if config["data"]["batch_size"] < 1 or config["validation"]["samples"] < 2:
         raise ValueError("positive batch size and >=2 validation samples required")
     random.seed(config["seed"])
@@ -127,7 +130,7 @@ def main():
     if args.mode == "evaluate":
         logger_config["name"] += "_evaluate_"+args.split
     logger = ExperimentLogger(logger_config, config)
-    print("No planning. No teacher/target detach/regularizer/noise. Raw-step relative actions; validation EVERY epoch.")
+    print(f"Raw-step relative actions; no planning. Training validation every {val_interval} epoch(s) and on the final epoch.")
     try:
         val_batches, val_dataset = loader(config, args.split if args.mode == "evaluate" else "val", config["validation"]["samples"])
         if args.mode == "evaluate":
@@ -161,16 +164,20 @@ def main():
                 torch.cuda.set_rng_state_all(saved["cuda_rng"])
         checkpoint_dir = output/"checkpoints"
         checkpoint_dir.mkdir(exist_ok=True)
-        for epoch in range(start+1, config["training"]["epochs"]+1):
+        epochs = config["training"]["epochs"]
+        for epoch in range(start+1, epochs+1):
             metrics = train_epoch(model, batches, optimizer, config, device)
-            validation, values = evaluate(model, val_batches, config, device)
-            metrics.update(validation)
+            validation, improved = {}, False
+            message = f"Epoch {epoch}/{epochs} total={metrics['train/loss_total']:.6g}"
+            if epoch % val_interval == 0 or epoch == epochs:
+                validation, values = evaluate(model, val_batches, config, device)
+                metrics.update(validation)
+                improved = validation["val/loss_total"] < best
+                best = min(best, validation["val/loss_total"])
+                message += (f" val_pred={metrics['val/loss_pred']:.6g} std={metrics['collapse/feature_std']:.5g} "
+                            f"rank={metrics['collapse/effective_rank']:.3g} violation={metrics['dynamics/progress_violation_ratio']:.3g}")
             append_metrics(output/"metrics.jsonl", epoch, metrics)
-            print(f"Epoch {epoch}/{config['training']['epochs']} total={metrics['train/loss_total']:.6g} "
-                  f"val_pred={metrics['val/loss_pred']:.6g} std={metrics['collapse/feature_std']:.5g} "
-                  f"rank={metrics['collapse/effective_rank']:.3g} violation={metrics['dynamics/progress_violation_ratio']:.3g}")
-            improved = validation["val/loss_total"] < best
-            best = min(best, validation["val/loss_total"])
+            print(message if validation else message+" (validation skipped)")
             checkpoint = dict(model=model.state_dict(), optimizer=optimizer.state_dict(), config=config,
                               epoch=epoch, best=best, metrics=validation, initial_encoder=initial_encoder,
                               train_sources=provenance, torch_rng=torch.get_rng_state(), python_rng=random.getstate(),
@@ -178,7 +185,7 @@ def main():
             torch.save(checkpoint, checkpoint_dir/"latest.pt")
             if improved:
                 torch.save(checkpoint, checkpoint_dir/"best_loss.pt")
-            if epoch == 1 or epoch % config["validation"]["visualization_interval"] == 0 or epoch == config["training"]["epochs"]:
+            if validation and (epoch == 1 or epoch % config["validation"]["visualization_interval"] == 0 or epoch == epochs):
                 torch.save(values, output/"diagnostics.pt")
                 figure_paths = visualize(model, val_dataset, config, output/"visualizations", epoch, device)
                 log_figures(logger, figure_paths, metrics)

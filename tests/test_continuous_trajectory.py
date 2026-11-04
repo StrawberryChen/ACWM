@@ -134,6 +134,31 @@ class TrajectoryTests(unittest.TestCase):
                 self.assertIn("val/pred_step_3", metrics)
                 self.assertTrue(all(np.isfinite(v) for v in metrics.values()))
 
+    def test_validation_interval_logs_training_and_saves_latest_every_epoch(self):
+        with tempfile.TemporaryDirectory() as temp, contextlib.redirect_stdout(io.StringIO()):
+            root = Path(temp)
+            config = self.fixture(root, "action_only")
+            config["training"]["epochs"] = 6
+            path = root/"config.yaml"
+            path.write_text(yaml.safe_dump(config))
+            val_metrics = {"val/loss_total": .1, "val/loss_pred": .1, "collapse/feature_std": .01,
+                           "collapse/effective_rank": 2., "dynamics/progress_violation_ratio": 0.}
+            output = root/"action_only"
+            def fake_train(*args):
+                return {"train/loss_total": .2}
+            with (patch("sys.argv", ["train", "--config", str(path)]),
+                  patch("experiments.continuous_dynamics.train.train_epoch", side_effect=fake_train),
+                  patch("experiments.continuous_dynamics.train.evaluate", return_value=(val_metrics, {})),
+                  patch("experiments.continuous_dynamics.train.visualize", return_value={}) as plots,
+                  patch("experiments.continuous_dynamics.train.torch.save") as save):
+                main()
+            rows = [json.loads(line) for line in (output/"metrics.jsonl").read_text().splitlines()]
+            self.assertEqual([row["epoch"] for row in rows], list(range(1, 7)))
+            self.assertEqual([row["epoch"] for row in rows if "val/loss_total" in row], [5, 6])
+            self.assertEqual(plots.call_count, 2)
+            self.assertEqual([call.args[0]["epoch"] for call in save.call_args_list
+                              if call.args[1].name == "latest.pt"], list(range(1, 7)))
+
     def test_both_variants_train_checkpoint_evaluate_and_probe(self):
         from experiments.continuous_dynamics.probe import main as probe
         with tempfile.TemporaryDirectory() as temp, contextlib.redirect_stdout(io.StringIO()):

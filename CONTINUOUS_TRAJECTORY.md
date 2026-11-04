@@ -119,7 +119,10 @@ DATA_CONFIG = "/content/drive/MyDrive/ACWM/continuous_dynamics/directional_v1/co
   --output-dir /content/drive/MyDrive/ACWM/continuous_trajectory/state_action
 ```
 
-默认各100 epochs、batch64、每轮固定样本 validation、每5轮可视化；两个输出目录独立。
+默认各100 epochs、batch64、每5轮固定样本 validation 并保存可视化；两个输出目录独立。
+直接编辑对应 YAML 的 `validation.interval` 改验证频率。最后一轮总会验证；
+可视化只在已经验证且符合 `validation.visualization_interval` 的轮次（以及最后一轮）运行，
+不会额外触发验证。训练日志和 `latest.pt` 每轮更新，`best_loss.pt` 只在验证轮比较。
 H/K 增大意味着更多 frame encoder 和 dynamics 计算；显存不足时在 YAML 减小 data.batch_size，
 两个对比实验保持一致，并且如果使用 --data-config，需要也同步其 batch_size（或用直接配置路径启动）。
 

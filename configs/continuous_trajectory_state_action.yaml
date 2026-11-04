@@ -7,3 +7,6 @@ loss:
   margin: 0.1  # Minimum velocity projection along the reference direction.
 wandb:
   name: continuous_trajectory_state_action_seed42
+validation:
+  interval: 5  # Run full validation every N epochs, plus the final epoch.
+  visualization_interval: 5  # Save plots on validation epochs that match this cadence.
