@@ -20,12 +20,16 @@ class ActionTrajectoryEncoder(nn.Module):
                 if parameter.ndim > 1:
                     nn.init.xavier_uniform_(parameter)
 
-    def forward(self, actions):
+    def encode_tokens(self, actions):
         assert actions.ndim == 3 and actions.shape[-1] == 2
         assert 1 <= actions.shape[1] <= self.horizon
         embedded = self.action_encoder(actions)  # [B,H,192], same action MLP at all h
         tokens = embedded+self.positions[:, :actions.shape[1]]
-        return self.transformer(tokens).mean(1), embedded  # context [B,192], actions [B,H,192]
+        return self.transformer(tokens), embedded  # contextual tokens [B,H,192]
+
+    def forward(self, actions):
+        tokens, embedded = self.encode_tokens(actions)
+        return tokens.mean(1), embedded  # legacy global context [B,192], actions [B,H,192]
 
 
 class TrajectoryVelocityField(nn.Module):
@@ -59,6 +63,7 @@ class TrajectoryWorldModel(nn.Module):
             nn.SiLU(), nn.Linear(latent_dim, latent_dim))
         self.integrator = EulerIntegrator(integration_steps)
         self.horizon, self.direction_mode, self.direction_eps = horizon, direction_mode, direction_eps
+        self.direction_scope = "global"
 
     def condition(self, start, actions):
         context, embeddings = self.action_trajectory(actions)

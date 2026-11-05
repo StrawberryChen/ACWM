@@ -21,8 +21,15 @@ from .visualize import visualize
 
 def build_model(config):
     if config.get("experiment") == "continuous_trajectory":
+        settings = dict(config["model"])
+        scope = settings.pop("direction_scope", "global")
+        if scope == "per_step":
+            from .per_step_model import PerStepTrajectoryWorldModel
+            return PerStepTrajectoryWorldModel(**settings)
+        if scope != "global":
+            raise ValueError("direction_scope must be global or per_step")
         from .trajectory_model import TrajectoryWorldModel
-        return TrajectoryWorldModel(**config["model"])
+        return TrajectoryWorldModel(**settings)
     return ContinuousWorldModel(**config["model"])
 
 

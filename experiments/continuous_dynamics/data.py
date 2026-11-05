@@ -83,7 +83,10 @@ def resolve(config_path, data_config=None, output_dir=None):
         config["data"].update(prepared["data"])
         config["device"] = prepared["device"]
         if config.get("experiment") == "continuous_trajectory":
-            config["output_dir"] = str(Path(prepared["output_dir"]).parent/"continuous_trajectory"/config["model"]["direction_mode"])
+            variant = config["model"]["direction_mode"]
+            if config["model"].get("direction_scope") == "per_step":
+                variant += "_per_step"
+            config["output_dir"] = str(Path(prepared["output_dir"]).parent/"continuous_trajectory"/variant)
         else:
             config["output_dir"] = str(Path(prepared["output_dir"]).parent/"continuous_dynamics"/config["loss"]["mode"])
     if output_dir:

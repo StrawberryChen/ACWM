@@ -40,7 +40,10 @@ def prediction_metrics(prediction, target):
             "block_orientation_mae_degrees": float(angle_error.mean()*180/torch.pi)}
 
 
-def fit_probes(features, labels, settings, device):
+def fit_probes(features, labels, settings, device, progress=False, description="Probe"):
+    from tqdm.auto import tqdm
+    if progress:
+        print(f"{description}: fitting linear ridge probe...", flush=True)
     x_train, x_val, x_test = features
     y_train, y_val, y_test = labels
     # All normalization fit exclusively on probe train features/labels.
@@ -60,7 +63,8 @@ def fit_probes(features, labels, settings, device):
     optimizer = torch.optim.Adam(head.parameters(), lr=settings["learning_rate"])
     train_x, train_y, val_x, val_y = (v.to(device) for v in (x[0], y[0], x[1], y[1]))
     best_loss, best = float("inf"), deepcopy(head.state_dict())
-    for _ in range(settings["epochs"]):
+    epochs = tqdm(range(settings["epochs"]), desc=f"{description} MLP probe", dynamic_ncols=True, disable=not progress)
+    for _ in epochs:
         head.train()
         indices = torch.randperm(len(train_x), device=device)
         for chosen in indices.split(settings["batch_size"]):
@@ -73,6 +77,8 @@ def fit_probes(features, labels, settings, device):
             score = float((head(val_x)-val_y).square().mean())
         if score < best_loss:
             best_loss, best = score, deepcopy(head.state_dict())
+        if progress:
+            epochs.set_postfix(val_mse=f"{score:.6g}", best=f"{best_loss:.6g}")
     head.load_state_dict(best)  # select by validation, never by test
     head.eval()
     with torch.no_grad():

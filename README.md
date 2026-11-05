@@ -6,6 +6,8 @@
 Trajectory 扩展：[`两个可训练方向版本`](CONTINUOUS_TRAJECTORY.md)
 （Action-only 与 State+Action；完整 open-loop 多步预测，独立 YAML 和输出目录）。
 
+方向粒度修正版：[`Per-step arrows`](CONTINUOUS_PER_STEP.md)，每个真实时间步一个方向，旧全局版本保留。
+
 ACWM 将世界 latent 拆成可控的 **Agent State** 与任务环境对应的
 **Environment State**。其结构约束是：
 

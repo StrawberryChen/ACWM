@@ -269,6 +269,7 @@ def main():
         for index, run in enumerate(runs):
             spec = load_config(run/"config.yaml")
             print(f"[{index}] {run}\n    direction={spec['model']['direction_mode']}, "
+                  f"scope={spec['model'].get('direction_scope', 'global')}, "
                   f"H={spec['model']['horizon']}, progress_weight={spec['loss']['weight']}", flush=True)
         choice = int(input("输入要做 planning 的实验编号："))
         if not 0 <= choice < len(runs):
@@ -303,7 +304,8 @@ def main():
         raise FileExistsError("choose a fresh planning output directory")
     output.mkdir(parents=True, exist_ok=True)
     metadata = dict(checkpoint=str(Path(args.checkpoint).resolve()), checkpoint_sha256=file_sha256(args.checkpoint),
-                    direction_mode=model.direction_mode, split=args.split, settings={**settings, "horizon": model.horizon},
+                    direction_mode=model.direction_mode, direction_scope=getattr(model, "direction_scope", "global"),
+                    split=args.split, settings={**settings, "horizon": model.horizon},
                     model_action_scale=config["data"]["action_scale"], env_action_scale=settings["env_action_scale"],
                     cost="mean squared terminal predicted latent vs encoded fixed goal image",
                     success="swm environment terminated or info.is_success; not CEM cost or fixed green T overlap",

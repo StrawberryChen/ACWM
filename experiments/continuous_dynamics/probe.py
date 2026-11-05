@@ -4,6 +4,7 @@ from copy import deepcopy
 import json
 from pathlib import Path
 import torch
+from tqdm.auto import tqdm
 
 from experiment_tracking import ExperimentLogger
 from experiments.avs_target.probe import fit_probes
@@ -15,15 +16,16 @@ from .train import load_checkpoint, build_model
 @torch.no_grad()
 def extract(encoder, config, split, limit, device):
     import numpy as np
+    print(f"[{split}] Loading/checking NPZ episodes from Drive (may take time)...", flush=True)
     batches, dataset = loader(config, split, limit=limit, horizon=1)
     labels = {}
-    for i, path in enumerate(dataset.paths):
+    for i, path in enumerate(tqdm(dataset.paths, desc=f"{split} state labels", dynamic_ncols=True)):
         with np.load(path) as data:
             if "states" not in data or data["states"].shape[-1] < 5:
                 raise ValueError("probe needs states [T,>=5]; world-model training does not")
             labels[i] = data["states"][:, :5].copy()
     features, targets = [], []
-    for batch in batches:
+    for batch in tqdm(batches, desc=f"{split} encoder features", dynamic_ncols=True):
         features.append(encoder(batch["frames"][:, 0].to(device)).cpu())
         raw = torch.from_numpy(np.stack([labels[int(ep)][int(t)] for ep, t in zip(batch["episode"], batch["timestep"])]))
         targets.append(torch.cat((raw[:, :4], raw[:, 4:5].sin(), raw[:, 4:5].cos()), -1))
@@ -43,15 +45,20 @@ def main():
         config["device"] = args.device
     if args.no_wandb:
         config["wandb"]["enabled"] = False
+    print("Probe: checking episode-disjoint dataset paths...", flush=True)
     validate_splits(config)
     torch.manual_seed(config["seed"])
     device = torch.device(config["device"])
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("select a GPU runtime or explicitly pass --device cpu")
+    print(f"Probe device: {device}. Loading {args.checkpoint}", flush=True)
     model = build_model(config).to(device)
     saved = load_checkpoint(args.checkpoint, config, model)
     encoder = model.encoder.requires_grad_(False).eval()
     before = deepcopy(encoder.state_dict())
     results, weights = {}, {}
     for name in ("trained_encoder", "random_encoder"):
+        print(f"\n=== {name}: extracting train/val/test features ===", flush=True)
         if name == "random_encoder":
             encoder.load_state_dict(saved["initial_encoder"])
         features, labels = [], []
@@ -61,7 +68,7 @@ def main():
             features.append(x)
             labels.append(y)
         torch.manual_seed(config["seed"])
-        metrics, state = fit_probes(features, labels, config["probe"], device)
+        metrics, state = fit_probes(features, labels, config["probe"], device, progress=True, description=name)
         results.update({f"probe/{name}/{k}": v for k, v in metrics.items()})
         weights[name] = state
     encoder.load_state_dict(before)
@@ -72,6 +79,7 @@ def main():
     (output/"metadata.json").write_text(json.dumps(dict(checkpoint_sha256=file_sha256(args.checkpoint),
                                                        note="angle decoded as sin/cos; position error in pixels"), indent=2))
     torch.save(weights, output/"heads.pt")
+    print(f"Probe results saved to: {output}", flush=True)
     logger = ExperimentLogger({**config["wandb"], "name": config["wandb"]["name"]+"_probe"}, config)
     try:
         logger.log(results, step=0)

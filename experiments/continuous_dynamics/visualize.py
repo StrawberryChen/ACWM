@@ -88,5 +88,6 @@ def visualize(model, dataset, config, output, epoch, device):
     plt.close(fig)
     np.savez_compressed(output/f"latents_{epoch:04d}.npz", features=features.numpy(),
                         trajectory=trajectory.numpy(), internal_states=result["states"].cpu().numpy(),
-                        target=result["target"].cpu().numpy(), pca_mean=mean.numpy(), pca_basis=basis.numpy())
+                        target=result["target"].cpu().numpy(), pca_mean=mean.numpy(), pca_basis=basis.numpy(),
+                        **({"directions": result["direction"].cpu().numpy()} if "direction" in result else {}))
     return paths

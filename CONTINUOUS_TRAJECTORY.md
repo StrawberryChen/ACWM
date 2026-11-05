@@ -3,6 +3,9 @@
 独立于原来的 single-step `continuous_dynamics` 配置，保留旧入口和权重。
 第一阶段仍然没有 planner，不使用预训练、BN、SIGReg、teacher、重建、对比学习或物理监督。
 
+**方向粒度修正版**：新增 [逐时间步箭头](CONTINUOUS_PER_STEP.md)，每个真实 action interval
+具有自己的 d_h。本页两个旧配置仍是全 horizon 单箭头，用作对照，不会静默改变旧实验。
+
 训练完成后可运行新增的独立 [planning 诊断入口](CONTINUOUS_PLANNING.md)，训练流程不自动调用它。
 
 ## 两个实验

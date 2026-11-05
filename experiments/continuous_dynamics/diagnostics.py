@@ -97,7 +97,11 @@ def evaluate(model, batches, config, device):
             metrics[f"val/pred_step_{h+1}"] = float((values["prediction"][:, h]-values["target"][:, h]).square().mean())
         metrics["direction/raw_norm"] = float(values["direction_raw"].norm(dim=-1).mean())
         metrics["direction/feature_std"] = float(values["direction"].std(0, correction=0).mean())
-        metrics["direction/velocity_cosine"] = float(F.cosine_similarity(values["velocities"], values["direction"][:, None, None], dim=-1).mean())
+        direction = values["direction"]
+        reference = direction[:, :, None] if direction.ndim == 3 else direction[:, None, None]
+        metrics["direction/velocity_cosine"] = float(F.cosine_similarity(values["velocities"], reference, dim=-1).mean())
+        if direction.ndim == 3 and direction.shape[1] > 1:
+            metrics["direction/temporal_cosine"] = float(F.cosine_similarity(direction[:, 1:], direction[:, :-1], dim=-1).mean())
     else:
         transition = (values["target"]-values["start"]).norm(dim=-1)
     metrics.update(summary(transition, "dynamics/latent_transition_distance"))
