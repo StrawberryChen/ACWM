@@ -53,21 +53,37 @@ state labels 只用于环境 reset/evaluation，模型不读取未来图像或 s
 
 ## Colab：不用 ROOT/RUN 临时变量，直接选择已有实验
 
-挂载 Drive，准备好仓库后：
+挂载 Drive，准备好仓库后更新并安装依赖：
 
 ```python
 %cd /content/ACWM
 !git pull --ff-only origin main
 %pip install -q -e ".[colab]"
 
-# 先做一例、最多5步，检查环境/输出链路（不作为成功率结论）。
-!python -u -m experiments.continuous_dynamics.planning --choose --episodes 1 --max-steps 5
-
-# 再启动默认10案例评测，依次运行 CEM / 不动 / 随机动作。
-!python -u -m experiments.continuous_dynamics.planning --choose
 ```
 
-命令列出已保存的 trajectory 实验及 direction_mode/H/progress_weight，输入编号即可。
+Colab 的选择放在 notebook 本身（不要在 `!python` 子进程中 input，部分运行时会 EOF）：
+
+```python
+import subprocess, sys
+from experiments.continuous_dynamics.planning import discover_runs
+
+runs = discover_runs("/content/drive/MyDrive/ACWM")
+assert runs, "没有找到实验，请检查网盘中的 config.yaml 和 checkpoints/latest.pt"
+for i, run in enumerate(runs):
+    print(f"[{i}] {run}")
+index = int(input("输入实验编号："))
+assert 0 <= index < len(runs)
+subprocess.run([
+    sys.executable, "-u", "-m", "experiments.continuous_dynamics.planning",
+    "--run", str(runs[index]), "--episodes", "1", "--max-steps", "5",
+], cwd="/content/ACWM", check=True)
+```
+
+上述单元格每次会自己找目录，不依赖旧的 RUN/ROOT 变量。
+确认一例 smoke test 正常后，从命令列表中去掉 `--episodes 1 --max-steps 5` 四项，
+重新执行同一个单元格，即默认10案例完整测试。
+普通终端也可直接用 `python -u -m experiments.continuous_dynamics.planning --choose`。
 运行参数从该实验的 saved config.yaml 读取，不用重新生成数据配置，不用重做数据，不用登录 W&B。
 默认 val split 用于开发诊断；定稿后可 `--split test`，不要用 test 反复调参。
 
