@@ -3,6 +3,8 @@
 独立于原来的 single-step `continuous_dynamics` 配置，保留旧入口和权重。
 第一阶段仍然没有 planner，不使用预训练、BN、SIGReg、teacher、重建、对比学习或物理监督。
 
+训练完成后可运行新增的独立 [planning 诊断入口](CONTINUOUS_PLANNING.md)，训练流程不自动调用它。
+
 ## 两个实验
 
 共同输入：当前 RGB `X_t`、未来候选/记录动作 `[A_t,...,A_{t+H-1}]`。

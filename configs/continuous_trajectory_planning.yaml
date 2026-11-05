@@ -1,0 +1,18 @@
+# Independent evaluation settings; training model/data come from RUN/config.yaml.
+seed: 42
+episodes: 10
+max_steps: 100
+goal_offset_steps: 16  # Dataset state +16 RAW transitions, not the fixed green T.
+num_candidates: 128
+num_elites: 16
+iterations: 3
+candidate_batch_size: 128
+execute_steps: 1
+initial_std: 0.03  # Model action units, typically displacement / 512.
+min_std: 0.003
+env_action_scale: 100.0  # Existing swm relative controller: target = agent + 100*A_env.
+video_episodes: 10
+video_fps: 20
+with_target: true
+render_goal_pose: [256.0, 256.0, 0.7853981633974483]
+policies: [cem, zero, random]  # SAME dataset start/goal cases for all policies.
