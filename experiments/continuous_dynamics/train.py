@@ -21,6 +21,9 @@ from .visualize import visualize
 
 
 def build_model(config):
+    if config.get("experiment") == "continuous_velocity":
+        from .velocity_model import SequentialVelocityWorldModel
+        return SequentialVelocityWorldModel(**config["model"])
     if config.get("experiment") == "continuous_trajectory":
         settings = dict(config["model"])
         scope = settings.pop("direction_scope", "global")
@@ -46,7 +49,7 @@ def train_epoch(model, batches, optimizer, config, device):
         optimizer.zero_grad(set_to_none=True)
         losses["loss_total"].backward()
         gradient_metrics = {}
-        for name in ("direction_head", "action_trajectory"):
+        for name in (("field",) if "loss_velocity" in losses else ("direction_head", "action_trajectory")):
             if hasattr(model, name):
                 norm = sum(float(p.grad.detach().square().sum()) for p in getattr(model, name).parameters() if p.grad is not None)**.5
                 gradient_metrics[f"{name}_gradient_norm"] = norm
@@ -58,7 +61,10 @@ def train_epoch(model, batches, optimizer, config, device):
         for key, value in gradient_metrics.items():
             sums[key] = sums.get(key, 0.)+value*n
         count += n
-        progress.set_postfix(pred=f"{sums['loss_pred']/count:.6g}", progress=f"{sums['loss_progress']/count:.6g}")
+        if "loss_velocity" in losses:
+            progress.set_postfix(velocity=f"{sums['loss_velocity']/count:.6g}", sigreg=f"{sums['loss_sigreg']/count:.6g}")
+        else:
+            progress.set_postfix(pred=f"{sums['loss_pred']/count:.6g}", progress=f"{sums['loss_progress']/count:.6g}")
     return {f"train/{key}": value/count for key, value in sums.items()}
 
 
@@ -132,6 +138,8 @@ def main():
         raise ValueError("validation.interval must be a positive integer")
     if config["data"]["batch_size"] < 1 or config["validation"]["samples"] < 2:
         raise ValueError("positive batch size and >=2 validation samples required")
+    if config.get("experiment") == "continuous_velocity" and config["loss"]["mode"] != "velocity_sigreg":
+        raise ValueError("continuous_velocity requires loss.mode=velocity_sigreg")
     require_mounted_drive(config["output_dir"])
     random.seed(config["seed"])
     np.random.seed(config["seed"])
@@ -204,7 +212,11 @@ def main():
                 improved = validation["val/loss_total"] < best
                 best = min(best, validation["val/loss_total"])
                 message += (f" val_pred={metrics['val/loss_pred']:.6g} std={metrics['collapse/feature_std']:.5g} "
-                            f"rank={metrics['collapse/effective_rank']:.3g} violation={metrics['dynamics/progress_violation_ratio']:.3g}")
+                            f"rank={metrics['collapse/effective_rank']:.3g}")
+                if "val/loss_velocity" in metrics:
+                    message += f" vel={metrics['val/loss_velocity']:.6g} shuffle_delta={metrics['action/shuffle_loss_delta']:.4g}"
+                else:
+                    message += f" violation={metrics['dynamics/progress_violation_ratio']:.3g}"
             checkpoint = dict(model=model.state_dict(), optimizer=optimizer.state_dict(), config=config,
                               epoch=epoch, best=best, metrics=validation, initial_encoder=initial_encoder,
                               train_sources=provenance, torch_rng=torch.get_rng_state(), python_rng=random.getstate(),

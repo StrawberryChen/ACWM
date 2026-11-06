@@ -1,0 +1,54 @@
+experiment: continuous_velocity
+seed: 42
+device: cuda
+output_dir: /content/drive/MyDrive/ACWM/continuous_velocity/velocity_sigreg
+data:
+  train_paths: [/content/drive/MyDrive/ACWM/continuous_trajectory_fresh_20261104_190724/avs_target/data/train/episode_*.npz]
+  val_paths: [/content/drive/MyDrive/ACWM/continuous_trajectory_fresh_20261104_190724/avs_target/data/val/episode_*.npz]
+  test_paths: [/content/drive/MyDrive/ACWM/continuous_trajectory_fresh_20261104_190724/avs_target/data/test/episode_*.npz]
+  action_mode: relative
+  action_scale: 512.0
+  frame_value_range: auto
+  batch_size: 32
+  num_workers: 2
+  cache_episodes: 8
+model:
+  image_size: 96
+  patch_size: 16
+  latent_dim: 192
+  hidden_dim: 512
+  horizon: 25
+  readout_stride: 5
+  action_embedding_dim: 64
+  integration_steps: 2  # each raw action stays fixed for two half-steps; used only at rollout
+  start_fraction: 0.5
+loss:
+  mode: velocity_sigreg
+  sigreg_weight: 0.09
+  sigreg_knots: 17
+  sigreg_projections: 256
+training:
+  epochs: 20
+  learning_rate: 0.0003
+  weight_decay: 0.0
+  gradient_clip_norm: 1.0
+validation:
+  interval: 5
+  visualization_interval: 5
+  samples: 1024
+  action_samples: 8
+  action_low: -1.0
+  action_high: 1.0
+  visualization_samples: 512
+probe:
+  max_train_samples: 10000
+  max_eval_samples: 2000
+  epochs: 100
+  batch_size: 256
+  hidden_dim: 128
+  learning_rate: 0.001
+wandb:
+  enabled: true
+  project: acwm
+  name: continuous_velocity_sigreg_seed42
+  mode: online

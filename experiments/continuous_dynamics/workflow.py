@@ -11,24 +11,27 @@ from experiments.avs_target.data import merge
 
 
 DEFAULT_WORKFLOW = "configs/colab_trajectory.yaml"
+VELOCITY_WORKFLOW = "configs/colab_velocity_sigreg.yaml"
 REPO = Path(__file__).resolve().parents[2]
 VARIANTS = {
     "action_per_step": "continuous_trajectory_action_per_step.yaml",
     "state_action_per_step": "continuous_trajectory_state_action_per_step.yaml",
     "action_global": "continuous_trajectory_action.yaml",
     "state_action_global": "continuous_trajectory_state_action.yaml",
+    "velocity_sigreg": "continuous_velocity_sigreg.yaml",
 }
 
 
 def configure_colab(variant, run_name, *, overrides=None, planning=None):
     """Persist notebook parameters next to the run; notebook needs no hand-written paths."""
-    settings = load_config(REPO / DEFAULT_WORKFLOW)
+    template = REPO / (VELOCITY_WORKFLOW if variant == "velocity_sigreg" else DEFAULT_WORKFLOW)
+    settings = load_config(template)
     settings.update(variant=variant, run_name=run_name)
     if overrides:
         settings["overrides"] = merge(settings["overrides"], overrides)
     if planning:
         settings["planning"] = merge(settings["planning"], planning)
-    candidate = Workflow(REPO / DEFAULT_WORKFLOW, settings)
+    candidate = Workflow(template, settings)
     target = candidate.run / "workflow.yaml"
     require_mounted_drive(target)
     if target.is_file() and load_config(target) == settings:

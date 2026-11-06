@@ -8,6 +8,7 @@ Notebook 参数持久化在各次实验的 `workflow.yaml`，底层有效参数�
 | 实验 | 入口与说明 |
 | --- | --- |
 | Continuous trajectory（当前主线） | `experiments.continuous_dynamics.workflow`、[per-step](CONTINUOUS_PER_STEP.md)、[planning](CONTINUOUS_PLANNING.md) |
+| Sequential velocity + SIGReg | [直接速度监督实验与 Colab 命令](CONTINUOUS_VELOCITY.md) |
 | 单步 continuous dynamics | [诊断与训练](CONTINUOUS_DYNAMICS.md) |
 | ACWM / LeWorld / Forward-Inverse / Motion Token | `train.py`，配置在 `configs/`；见 [项目说明](README.md) |
 | Action-Contrastive / Action Matching | `train_action_contrastive.py` / `train_action_matching.py`；[第一版](ACTION_CONTRASTIVE.md)、[第二版](ACTION_MATCHING_V2.md) |

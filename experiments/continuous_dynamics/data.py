@@ -82,7 +82,9 @@ def resolve(config_path, data_config=None, output_dir=None):
         # Borrow only paths/action units/runtime, NOT old loss/model/validation settings.
         config["data"].update(prepared["data"])
         config["device"] = prepared["device"]
-        if config.get("experiment") == "continuous_trajectory":
+        if config.get("experiment") == "continuous_velocity":
+            config["output_dir"] = str(Path(prepared["output_dir"]).parent/"continuous_velocity"/"velocity_sigreg")
+        elif config.get("experiment") == "continuous_trajectory":
             variant = config["model"]["direction_mode"]
             if config["model"].get("direction_scope") == "per_step":
                 variant += "_per_step"

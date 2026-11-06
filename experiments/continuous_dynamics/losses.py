@@ -35,7 +35,18 @@ class DirectionalProgressLoss(nn.Module):
         return F.relu(self.margin-reference_progress(velocities, self.eps)).mean()
 
 
-def objective(output, mode="directional", margin=.1, weight=1., eps=1e-8):
+def objective(output, mode="directional", margin=.1, weight=1., eps=1e-8,
+              sigreg_weight=0.09, sigreg_knots=17, sigreg_projections=256, generator=None):
+    if mode == "velocity_sigreg":
+        import math
+        from losses.latent import SIGRegLoss
+        if not math.isfinite(sigreg_weight) or sigreg_weight < 0:
+            raise ValueError("sigreg_weight must be finite and nonnegative")
+        velocity = F.mse_loss(output["velocity_prediction"], output["velocity_target"])
+        real = output["real_latents"].transpose(0, 1)  # [T,B,D]; no predicted states
+        sigreg = (SIGRegLoss(sigreg_knots, sigreg_projections).to(real.device)(real, generator=generator)
+                  if sigreg_weight else real.new_zeros(()))
+        return {"loss_total": velocity+sigreg_weight*sigreg, "loss_velocity": velocity, "loss_sigreg": sigreg}
     if mode not in {"prediction_only", "nonzero_velocity", "directional"} or margin < 0 or weight < 0 or eps <= 0:
         raise ValueError("invalid ablation/loss settings")
     prediction = F.mse_loss(output["prediction"], output["target"])  # NO target detach

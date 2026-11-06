@@ -1,0 +1,8 @@
+variant: velocity_sigreg
+run_name: velocity_sigreg_01
+runs_root: /content/drive/MyDrive/ACWM/trajectory_runs
+overrides: {}
+planning:
+  split: val
+  episodes: 10
+  max_steps: 100

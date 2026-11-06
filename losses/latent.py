@@ -42,14 +42,14 @@ class SIGRegLoss(nn.Module):
         self.register_buffer("gaussian_cf", gaussian_cf)
         self.register_buffer("weights", trapezoid * gaussian_cf)
 
-    def forward(self, embeddings: torch.Tensor) -> torch.Tensor:
+    def forward(self, embeddings: torch.Tensor, *, generator=None) -> torch.Tensor:
         if embeddings.ndim != 3:
             raise ValueError("SIGReg embeddings must have shape [T,B,D]")
         # Characteristic-function statistics are sensitive to fp16 rounding.
         embeddings = embeddings.float()
         directions = torch.randn(
             embeddings.size(-1), self.num_projections,
-            device=embeddings.device, dtype=torch.float32,
+            device=embeddings.device, dtype=torch.float32, generator=generator,
         )
         directions = torch.nn.functional.normalize(directions, dim=0)
         x_t = (embeddings @ directions).unsqueeze(-1) * self.t

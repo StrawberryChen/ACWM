@@ -1,4 +1,4 @@
-"""Exploratory latent CEM/MPC for the two continuous trajectory models.
+"""Exploratory latent CEM/MPC for continuous trajectory models.
 
 No retraining, no future GT in the predictor, no progress term in planning cost.
 Real environment outcomes, not predicted cost, determine success.
@@ -67,7 +67,7 @@ class LatentTrajectoryCEM:
         horizon, count = cfg["horizon"], cfg["num_candidates"]
         assert start.ndim == 2 and start.shape == goal.shape and len(start) == 1
         if horizon != model.horizon:
-            raise ValueError("use the trained full horizon; action context/arrow depend on its length")
+            raise ValueError("use the checkpoint's configured raw-step horizon")
         mean = start.new_zeros(horizon, 2)
         if warm_start is not None:
             mean[:len(warm_start)] = warm_start
@@ -81,8 +81,7 @@ class LatentTrajectoryCEM:
             actions[0] = mean
             costs, predictions = [], []
             for batch in actions.split(cfg["candidate_batch_size"]):
-                # EACH candidate gets its own sequence context and arrow, freshly
-                # recomputed on EVERY CEM iteration. Goal is NOT a model input.
+                # Roll out each candidate independently. Goal is NOT a model input.
                 predicted = model.rollout(start.expand(len(batch), -1), batch)  # [N,H,192]
                 costs.append((predicted[:, -1]-goal).square().mean(-1))
                 predictions.append(predicted)
@@ -246,7 +245,8 @@ def discover_runs(root):
                 "avs_target/outputs/continuous_trajectory/*/checkpoints/latest.pt")
     runs = sorted({p.parent.parent for pattern in patterns for p in root.glob(pattern)
                    if (p.parent.parent/"config.yaml").is_file()})
-    return [run for run in runs if load_config(run/"config.yaml").get("experiment") == "continuous_trajectory"]
+    return [run for run in runs if load_config(run/"config.yaml").get("experiment")
+            in {"continuous_trajectory", "continuous_velocity"}]
 
 
 def main():
@@ -258,7 +258,7 @@ def main():
     source.add_argument("--training-config", help="repository YAML; read its output_dir")
     source.add_argument("--choose", action="store_true", help="interactively choose an existing Drive experiment")
     parser.add_argument("--runs-root", default="/content/drive/MyDrive/ACWM")
-    parser.add_argument("--planning-config", default="configs/continuous_trajectory_planning.yaml")
+    parser.add_argument("--planning-config")
     parser.add_argument("--output-dir")
     parser.add_argument("--split", choices=("val", "test"), default="val")
     parser.add_argument("--episodes", type=int)
@@ -277,9 +277,11 @@ def main():
     print(f"Planning checkpoint: {args.checkpoint}", flush=True)
     saved = read_checkpoint(args.checkpoint)
     config = load_config(args.config) if args.config else deepcopy(saved["config"])
-    settings = load_config(args.planning_config)
-    if config.get("experiment") != "continuous_trajectory":
-        raise ValueError("use a continuous_trajectory action_only/state_action checkpoint")
+    if config.get("experiment") not in {"continuous_trajectory", "continuous_velocity"}:
+        raise ValueError("use a continuous_trajectory or continuous_velocity checkpoint")
+    settings = load_config(args.planning_config or "configs/continuous_trajectory_planning.yaml")
+    if config["experiment"] == "continuous_velocity" and not args.planning_config:
+        settings["goal_offset_steps"] = config["model"]["horizon"]
     if config["data"]["action_mode"] != "relative":
         raise ValueError("this planning adapter requires relative-action dataset semantics")
     for key in ("episodes", "max_steps"):
@@ -299,7 +301,9 @@ def main():
         raise FileExistsError("choose a fresh planning output directory")
     output.mkdir(parents=True, exist_ok=True)
     metadata = dict(checkpoint=str(Path(args.checkpoint).resolve()), checkpoint_sha256=file_sha256(args.checkpoint),
-                    direction_mode=model.direction_mode, direction_scope=getattr(model, "direction_scope", "global"),
+                    experiment=config["experiment"], direction_mode=getattr(model, "direction_mode", None),
+                    direction_scope=getattr(model, "direction_scope", None),
+                    trajectory_readout_stride=getattr(model, "readout_stride", 1),
                     split=args.split, settings={**settings, "horizon": model.horizon},
                     model_action_scale=config["data"]["action_scale"], env_action_scale=settings["env_action_scale"],
                     cost="mean squared terminal predicted latent vs encoded fixed goal image",
