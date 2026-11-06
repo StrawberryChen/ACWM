@@ -65,24 +65,13 @@ state labels 只用于环境 reset/evaluation，模型不读取未来图像或 s
 Colab 的选择放在 notebook 本身（不要在 `!python` 子进程中 input，部分运行时会 EOF）：
 
 ```python
-import subprocess, sys
-from experiments.continuous_dynamics.planning import discover_runs
-
-runs = discover_runs("/content/drive/MyDrive/ACWM")
-assert runs, "没有找到实验，请检查网盘中的 config.yaml 和 checkpoints/latest.pt"
-for i, run in enumerate(runs):
-    print(f"[{i}] {run}")
-index = int(input("输入实验编号："))
-assert 0 <= index < len(runs)
-subprocess.run([
-    sys.executable, "-u", "-m", "experiments.continuous_dynamics.planning",
-    "--run", str(runs[index]), "--episodes", "1", "--max-steps", "5",
-], cwd="/content/ACWM", check=True)
+from experiments.continuous_dynamics.colab import evaluate_run
+evaluate_run("planning", episodes=1, max_steps=5)
 ```
 
 上述单元格每次会自己找目录，不依赖旧的 RUN/ROOT 变量。
-确认一例 smoke test 正常后，从命令列表中去掉 `--episodes 1 --max-steps 5` 四项，
-重新执行同一个单元格，即默认10案例完整测试。
+评估读取权重内的训练配置，不依赖同目录的 config.yaml。
+确认一例 smoke test 正常后，运行 `evaluate_run("planning")`，默认10案例。
 普通终端也可直接用 `python -u -m experiments.continuous_dynamics.planning --choose`。
 运行参数从该实验的 saved config.yaml 读取，不用重新生成数据配置，不用重做数据，不用登录 W&B。
 默认 val split 用于开发诊断；定稿后可 `--split test`，不要用 test 反复调参。

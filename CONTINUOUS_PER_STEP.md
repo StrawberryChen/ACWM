@@ -73,7 +73,18 @@ H16、K4、100 epochs、每5轮验证仍然保持。loss.weight、margin 可分�
 做 global/per_step 公平对照时，复制同一组 H/K/weight/margin/seed/data 设置，
 不要在改方向粒度的同时调整其他参数。
 
-验证/probe/planning 入口不变，使用新实验各自保存的 config.yaml 和 checkpoint。
+Probe 和 Planning 默认从 checkpoint 读取当次训练配置，不需要 Drive 上的 config.yaml。
+若训练实际输出目录不确定，先在 Colab 挂载 Drive，再用仓库内的选择器：
+
+```python
+%cd /content/ACWM
+from experiments.continuous_dynamics.colab import evaluate_run
+evaluate_run("probe", "planning", episodes=10, max_steps=100)
+```
+
+选择器查找 Drive 的 ACWM 文件夹和当前运行时的仓库目录中的权重，让你选编号；
+不会自动猜测是哪一次训练。只跑一项时可只传 "probe" 或 "planning"。
+
 如果训练直接使用仓库 YAML 的 output_dir，Colab 评估命令也可以只写同一份 YAML：
 
 ```python
@@ -81,7 +92,7 @@ H16、K4、100 epochs、每5轮验证仍然保持。loss.weight、margin 可分�
 !python -u -m experiments.continuous_dynamics.planning --training-config configs/continuous_trajectory_action_per_step.yaml --split val --episodes 10 --max-steps 100
 ```
 
-`--training-config` 只用于读取 output_dir，实际评估仍读取该目录中保存的 config.yaml 和 latest.pt。
+`--training-config` 只用于读取 output_dir，实际评估使用 latest.pt 内嵌的配置。
 State+Action 使用对应的 state_action YAML。若训练用命令行参数覆盖了输出路径，或当前 YAML
 已改为指向另一个实验，用 `--run` 指定原实验目录。训练产物仍只存在 Drive。
 

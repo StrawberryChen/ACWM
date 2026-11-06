@@ -1,22 +1,23 @@
-"""Resolve evaluation artifacts without treating a training template as a saved run."""
+"""Locate continuous-model checkpoints; saved YAML is not required for evaluation."""
 from pathlib import Path
 
 from .data import resolve
 
 
-def run_paths(run=None, training_config=None, checkpoint=None):
-    if (run is None) == (training_config is None):
-        raise ValueError("select exactly one of --run or --training-config")
+def checkpoint_path(run=None, training_config=None, checkpoint=None):
+    if run is not None and training_config is not None:
+        raise ValueError("select at most one of --run or --training-config")
     if training_config is not None:
         run = resolve(training_config, None, None)["output_dir"]
-    run = Path(run)
-    config = run / "config.yaml"
-    checkpoint = Path(checkpoint) if checkpoint is not None else run / "checkpoints" / "latest.pt"
-    missing = [str(path) for path in (config, checkpoint) if not path.is_file()]
-    if missing:
+    if checkpoint is None:
+        if run is None:
+            raise ValueError("use --checkpoint, --run or --training-config")
+        checkpoint = Path(run) / "checkpoints" / "latest.pt"
+    checkpoint = Path(checkpoint)
+    if not checkpoint.is_file():
         raise FileNotFoundError(
-            f"Training artifacts not found: {', '.join(missing)}. "
-            "In Colab, check that Drive is mounted. If training used a different "
-            "output_dir (including --output-dir), select the actual experiment with --run."
+            f"Checkpoint not found: {checkpoint}. "
+            "In Colab, mount Drive and use experiments.continuous_dynamics.colab.find_checkpoints "
+            "to locate the actual checkpoint."
         )
-    return str(config), str(checkpoint)
+    return str(checkpoint)

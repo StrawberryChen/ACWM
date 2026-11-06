@@ -163,6 +163,7 @@ class PlanningTests(unittest.TestCase):
             with (patch("sys.argv", ["planning", "--choose", "--runs-root", str(root), "--output-dir", str(output)]),
                   patch("builtins.input", return_value="0"),
                   patch("experiments.continuous_dynamics.planning.build_model", return_value=ToyModel()),
+                  patch("experiments.continuous_dynamics.planning.read_checkpoint", return_value={"config": config}),
                   patch("experiments.continuous_dynamics.planning.load_checkpoint"),
                   patch("experiments.continuous_dynamics.planning.evaluate_planning", return_value={}) as evaluate):
                 main()
@@ -170,6 +171,21 @@ class PlanningTests(unittest.TestCase):
             metadata = json.loads((output/"metadata.json").read_text())
             self.assertEqual(metadata["settings"]["horizon"], 3)
             self.assertEqual(len(metadata["checkpoint_sha256"]), 64)
+
+    def test_checkpoint_only_planning_without_saved_yaml(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            checkpoint = root/"checkpoints/latest.pt"
+            checkpoint.parent.mkdir()
+            torch.save({"config": dict(experiment="continuous_trajectory", device="cpu",
+                                      data={"action_mode": "relative", "action_scale": 512., "val_paths": []})},
+                       checkpoint)
+            with (patch("sys.argv", ["planning", "--checkpoint", str(checkpoint)]),
+                  patch("experiments.continuous_dynamics.planning.build_model", return_value=ToyModel()),
+                  patch("experiments.continuous_dynamics.planning.load_checkpoint"),
+                  patch("experiments.continuous_dynamics.planning.evaluate_planning", return_value={}) as evaluate):
+                main()
+            self.assertEqual(evaluate.call_count, 1)
 
 
 if __name__ == "__main__":

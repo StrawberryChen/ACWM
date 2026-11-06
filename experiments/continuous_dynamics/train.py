@@ -61,8 +61,13 @@ def train_epoch(model, batches, optimizer, config, device):
     return {f"train/{key}": value/count for key, value in sums.items()}
 
 
-def load_checkpoint(path, config, model):
-    saved = torch.load(path, map_location="cpu", weights_only=False)
+def read_checkpoint(path):
+    return torch.load(path, map_location="cpu", weights_only=False)
+
+
+def load_checkpoint(path, config, model, *, saved=None):
+    if saved is None:
+        saved = read_checkpoint(path)
     if (saved["config"]["model"] != config["model"] or saved["config"]["loss"] != config["loss"]
             or saved["config"].get("experiment") != config.get("experiment")):
         raise ValueError("checkpoint model/loss mismatch; use matching saved config")
@@ -132,6 +137,8 @@ def main():
     if args.mode == "train" and not args.resume and (output/"checkpoints/latest.pt").exists():
         raise FileExistsError("output already contains a run; --resume or choose a NEW --output-dir")
     output.mkdir(parents=True, exist_ok=True)
+    if args.mode == "train":
+        print(f"Training checkpoint: {(output / 'checkpoints' / 'latest.pt').resolve()}", flush=True)
     (output/"config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
     logger_config = deepcopy(config["wandb"])
     if args.mode == "evaluate":

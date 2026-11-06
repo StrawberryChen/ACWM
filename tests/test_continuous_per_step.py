@@ -168,7 +168,8 @@ class PerStepTests(unittest.TestCase):
                 checkpoint = run/"checkpoints/latest.pt"
                 with patch("sys.argv", ["eval", "--config", str(path), "--checkpoint", str(checkpoint), "--mode", "evaluate"]):
                     main()
-                with patch("sys.argv", ["probe", "--config", str(path), "--checkpoint", str(checkpoint)]):
+                (run/"config.yaml").unlink()
+                with patch("sys.argv", ["probe", "--checkpoint", str(checkpoint)]):
                     probe()
                 self.assertTrue((run/"probes/latest/metrics.json").exists())
                 with np.load(run/"visualizations/latents_0001.npz") as plot:

@@ -10,8 +10,8 @@ from experiment_tracking import ExperimentLogger
 from experiments.avs_target.probe import fit_probes
 from experiments.avs_target.data import file_sha256
 from .data import load_config, loader, validate_splits
-from .run_paths import run_paths
-from .train import load_checkpoint, build_model
+from .run_paths import checkpoint_path
+from .train import load_checkpoint, build_model, read_checkpoint
 
 
 @torch.no_grad()
@@ -35,7 +35,7 @@ def extract(encoder, config, split, limit, device):
 
 def main():
     parser = argparse.ArgumentParser()
-    source = parser.add_mutually_exclusive_group(required=True)
+    source = parser.add_mutually_exclusive_group()
     source.add_argument("--config", help="saved training config.yaml")
     source.add_argument("--run", help="experiment directory on Drive")
     source.add_argument("--training-config", help="repository YAML; read its output_dir")
@@ -44,11 +44,14 @@ def main():
     parser.add_argument("--device")
     parser.add_argument("--no-wandb", action="store_true")
     args = parser.parse_args()
-    if not args.config:
-        args.config, args.checkpoint = run_paths(args.run, args.training_config, args.checkpoint)
-    elif not args.checkpoint:
+    if args.config and not args.checkpoint:
         parser.error("--config requires --checkpoint")
-    config = load_config(args.config)
+    if not (args.run or args.training_config or args.checkpoint):
+        parser.error("use --checkpoint, --run or --training-config")
+    args.checkpoint = checkpoint_path(args.run, args.training_config, args.checkpoint)
+    print(f"Probe checkpoint: {args.checkpoint}", flush=True)
+    saved = read_checkpoint(args.checkpoint)
+    config = load_config(args.config) if args.config else deepcopy(saved["config"])
     if args.device:
         config["device"] = args.device
     if args.no_wandb:
@@ -61,7 +64,7 @@ def main():
         raise RuntimeError("select a GPU runtime or explicitly pass --device cpu")
     print(f"Probe device: {device}. Loading {args.checkpoint}", flush=True)
     model = build_model(config).to(device)
-    saved = load_checkpoint(args.checkpoint, config, model)
+    load_checkpoint(args.checkpoint, config, model, saved=saved)
     encoder = model.encoder.requires_grad_(False).eval()
     before = deepcopy(encoder.state_dict())
     results, weights = {}, {}

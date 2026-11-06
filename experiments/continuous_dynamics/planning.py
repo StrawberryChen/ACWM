@@ -4,6 +4,7 @@ No retraining, no future GT in the predictor, no progress term in planning cost.
 Real environment outcomes, not predicted cost, determine success.
 """
 import argparse
+from copy import deepcopy
 import json
 from pathlib import Path
 import time
@@ -14,8 +15,9 @@ from tqdm.auto import tqdm
 
 from evaluation.planning import PlanningEvaluator
 from experiments.avs_target.data import load_config, file_sha256
-from .run_paths import run_paths
-from .train import build_model, load_checkpoint
+from .colab import select_checkpoint
+from .run_paths import checkpoint_path
+from .train import build_model, load_checkpoint, read_checkpoint
 
 
 def action_bounds(env, model_scale, env_scale):
@@ -249,10 +251,10 @@ def discover_runs(root):
 
 def main():
     parser = argparse.ArgumentParser()
-    source = parser.add_mutually_exclusive_group(required=True)
+    source = parser.add_mutually_exclusive_group()
     source.add_argument("--config", help="saved training config.yaml")
     parser.add_argument("--checkpoint")
-    source.add_argument("--run", help="experiment directory; infer config.yaml and checkpoints/latest.pt")
+    source.add_argument("--run", help="experiment directory; infer checkpoints/latest.pt")
     source.add_argument("--training-config", help="repository YAML; read its output_dir")
     source.add_argument("--choose", action="store_true", help="interactively choose an existing Drive experiment")
     parser.add_argument("--runs-root", default="/content/drive/MyDrive/ACWM")
@@ -266,23 +268,16 @@ def main():
     if args.choose:
         if args.checkpoint:
             parser.error("--choose does not accept --checkpoint")
-        runs = discover_runs(args.runs_root)
-        if not runs:
-            raise FileNotFoundError("no trajectory runs found; use --run with the actual experiment directory")
-        for index, run in enumerate(runs):
-            spec = load_config(run/"config.yaml")
-            print(f"[{index}] {run}\n    direction={spec['model']['direction_mode']}, "
-                  f"scope={spec['model'].get('direction_scope', 'global')}, "
-                  f"H={spec['model']['horizon']}, progress_weight={spec['loss']['weight']}", flush=True)
-        choice = int(input("输入要做 planning 的实验编号："))
-        if not 0 <= choice < len(runs):
-            raise ValueError("experiment number out of range")
-        args.run = str(runs[choice])
-    if args.run or args.training_config:
-        args.config, args.checkpoint = run_paths(args.run, args.training_config, args.checkpoint)
-    if not args.config or not args.checkpoint:
+        args.checkpoint = select_checkpoint(args.runs_root)
+    if args.config and not args.checkpoint:
         parser.error("--config requires --checkpoint")
-    config, settings = load_config(args.config), load_config(args.planning_config)
+    if not (args.run or args.training_config or args.checkpoint):
+        parser.error("use --checkpoint, --run, --training-config or --choose")
+    args.checkpoint = checkpoint_path(args.run, args.training_config, args.checkpoint)
+    print(f"Planning checkpoint: {args.checkpoint}", flush=True)
+    saved = read_checkpoint(args.checkpoint)
+    config = load_config(args.config) if args.config else deepcopy(saved["config"])
+    settings = load_config(args.planning_config)
     if config.get("experiment") != "continuous_trajectory":
         raise ValueError("use a continuous_trajectory action_only/state_action checkpoint")
     if config["data"]["action_mode"] != "relative":
@@ -297,7 +292,7 @@ def main():
         raise RuntimeError("select a GPU Colab runtime")
     torch.manual_seed(settings["seed"])
     model = build_model(config).to(device)
-    load_checkpoint(args.checkpoint, config, model)
+    load_checkpoint(args.checkpoint, config, model, saved=saved)
     model.eval().requires_grad_(False)
     output = Path(args.output_dir) if args.output_dir else Path(args.checkpoint).parent.parent/"planning"/f"run_{int(time.time())}"
     if (output/"metadata.json").exists():
