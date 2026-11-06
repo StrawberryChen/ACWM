@@ -14,6 +14,7 @@ from tqdm.auto import tqdm
 
 from evaluation.planning import PlanningEvaluator
 from experiments.avs_target.data import load_config, file_sha256
+from .run_paths import run_paths
 from .train import build_model, load_checkpoint
 
 
@@ -248,10 +249,12 @@ def discover_runs(root):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", help="saved training config.yaml")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--config", help="saved training config.yaml")
     parser.add_argument("--checkpoint")
-    parser.add_argument("--run", help="experiment directory; infer config.yaml and checkpoints/latest.pt")
-    parser.add_argument("--choose", action="store_true", help="interactively choose an existing Drive experiment")
+    source.add_argument("--run", help="experiment directory; infer config.yaml and checkpoints/latest.pt")
+    source.add_argument("--training-config", help="repository YAML; read its output_dir")
+    source.add_argument("--choose", action="store_true", help="interactively choose an existing Drive experiment")
     parser.add_argument("--runs-root", default="/content/drive/MyDrive/ACWM")
     parser.add_argument("--planning-config", default="configs/continuous_trajectory_planning.yaml")
     parser.add_argument("--output-dir")
@@ -261,8 +264,8 @@ def main():
     parser.add_argument("--device")
     args = parser.parse_args()
     if args.choose:
-        if args.run or args.config or args.checkpoint:
-            parser.error("use --choose OR explicit --run/config/checkpoint")
+        if args.checkpoint:
+            parser.error("--choose does not accept --checkpoint")
         runs = discover_runs(args.runs_root)
         if not runs:
             raise FileNotFoundError("no trajectory runs found; use --run with the actual experiment directory")
@@ -275,13 +278,10 @@ def main():
         if not 0 <= choice < len(runs):
             raise ValueError("experiment number out of range")
         args.run = str(runs[choice])
-    if args.run:
-        if args.config:
-            parser.error("--run already selects its saved config; do not combine with --config")
-        args.config = str(Path(args.run)/"config.yaml")
-        args.checkpoint = args.checkpoint or str(Path(args.run)/"checkpoints/latest.pt")
+    if args.run or args.training_config:
+        args.config, args.checkpoint = run_paths(args.run, args.training_config, args.checkpoint)
     if not args.config or not args.checkpoint:
-        parser.error("use --choose, --run, or both --config and --checkpoint")
+        parser.error("--config requires --checkpoint")
     config, settings = load_config(args.config), load_config(args.planning_config)
     if config.get("experiment") != "continuous_trajectory":
         raise ValueError("use a continuous_trajectory action_only/state_action checkpoint")

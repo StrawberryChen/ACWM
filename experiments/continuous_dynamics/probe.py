@@ -10,6 +10,7 @@ from experiment_tracking import ExperimentLogger
 from experiments.avs_target.probe import fit_probes
 from experiments.avs_target.data import file_sha256
 from .data import load_config, loader, validate_splits
+from .run_paths import run_paths
 from .train import load_checkpoint, build_model
 
 
@@ -34,12 +35,19 @@ def extract(encoder, config, split, limit, device):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", required=True, help="saved training config.yaml")
-    parser.add_argument("--checkpoint", required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--config", help="saved training config.yaml")
+    source.add_argument("--run", help="experiment directory on Drive")
+    source.add_argument("--training-config", help="repository YAML; read its output_dir")
+    parser.add_argument("--checkpoint", help="defaults to latest.pt for --run/--training-config")
     parser.add_argument("--output-dir")
     parser.add_argument("--device")
     parser.add_argument("--no-wandb", action="store_true")
     args = parser.parse_args()
+    if not args.config:
+        args.config, args.checkpoint = run_paths(args.run, args.training_config, args.checkpoint)
+    elif not args.checkpoint:
+        parser.error("--config requires --checkpoint")
     config = load_config(args.config)
     if args.device:
         config["device"] = args.device

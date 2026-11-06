@@ -74,6 +74,17 @@ H16、K4、100 epochs、每5轮验证仍然保持。loss.weight、margin 可分�
 不要在改方向粒度的同时调整其他参数。
 
 验证/probe/planning 入口不变，使用新实验各自保存的 config.yaml 和 checkpoint。
+如果训练直接使用仓库 YAML 的 output_dir，Colab 评估命令也可以只写同一份 YAML：
+
+```python
+!python -u -m experiments.continuous_dynamics.probe --training-config configs/continuous_trajectory_action_per_step.yaml --no-wandb
+!python -u -m experiments.continuous_dynamics.planning --training-config configs/continuous_trajectory_action_per_step.yaml --split val --episodes 10 --max-steps 100
+```
+
+`--training-config` 只用于读取 output_dir，实际评估仍读取该目录中保存的 config.yaml 和 latest.pt。
+State+Action 使用对应的 state_action YAML。若训练用命令行参数覆盖了输出路径，或当前 YAML
+已改为指向另一个实验，用 `--run` 指定原实验目录。训练产物仍只存在 Drive。
+
 Probe 新增数据加载提示、特征提取进度条和 MLP 训练进度，不再全程静默。
 规划每个候选序列重新生成完整 d_0...d_{H-1}，每次 MPC 重新观察后重新计算。
 旧全局模型与新逐步模型 checkpoint 有配置隔离，避免同形状权重被错误当成同一方法续训。
