@@ -91,7 +91,9 @@ def main():
                                                        note="angle decoded as sin/cos; position error in pixels"), indent=2))
     torch.save(weights, output/"heads.pt")
     print(f"Probe results saved to: {output}", flush=True)
-    logger = ExperimentLogger({**config["wandb"], "name": config["wandb"]["name"]+"_probe"}, config)
+    logger_settings = {k: v for k, v in config["wandb"].items() if k not in ("id", "resume")}
+    logger_settings["name"] += "_probe"
+    logger = ExperimentLogger(logger_settings, config)
     try:
         logger.log(results, step=0)
     finally:

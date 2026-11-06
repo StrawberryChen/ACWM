@@ -1,5 +1,7 @@
 # Agent-Centric World Model (ACWM) v0.1
 
+当前 Trajectory 实验从 [Colab Notebook](notebooks/ACWM_Trajectory_Colab.ipynb) 开始；历史版本与入口见 [项目索引](PROJECT_GUIDE.md)。
+
 新增独立实验：[`Continuous Latent Dynamics v1`](CONTINUOUS_DYNAMICS.md)
 （随机 ViT + action-conditioned vector field + Euler integration + Directional Progress；无额外 anti-collapse loss，第一阶段无 planning）。旧版本入口保持不变。
 

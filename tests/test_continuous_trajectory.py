@@ -12,6 +12,7 @@ import torch
 import yaml
 
 from experiments.continuous_dynamics.data import load_config, loader, resolve
+from experiments.continuous_dynamics.checkpoint_io import save_checkpoint
 from experiments.continuous_dynamics.trajectory_model import TrajectoryWorldModel
 from experiments.continuous_dynamics.losses import objective, output_progress
 from experiments.continuous_dynamics.diagnostics import evaluate
@@ -150,14 +151,39 @@ class TrajectoryTests(unittest.TestCase):
                   patch("experiments.continuous_dynamics.train.train_epoch", side_effect=fake_train),
                   patch("experiments.continuous_dynamics.train.evaluate", return_value=(val_metrics, {})),
                   patch("experiments.continuous_dynamics.train.visualize", return_value={}) as plots,
-                  patch("experiments.continuous_dynamics.train.torch.save") as save):
+                  patch("experiments.continuous_dynamics.train.save_checkpoint", wraps=save_checkpoint) as save):
                 main()
             rows = [json.loads(line) for line in (output/"metrics.jsonl").read_text().splitlines()]
             self.assertEqual([row["epoch"] for row in rows], list(range(1, 7)))
             self.assertEqual([row["epoch"] for row in rows if "val/loss_total" in row], [5, 6])
             self.assertEqual(plots.call_count, 2)
-            self.assertEqual([call.args[0]["epoch"] for call in save.call_args_list
-                              if call.args[1].name == "latest.pt"], list(range(1, 7)))
+            self.assertEqual([call.args[1]["epoch"] for call in save.call_args_list
+                              if call.args[0].name == "latest.pt"], list(range(1, 7)))
+
+    def test_pause_after_one_epoch_resumes_same_schedule_and_weights(self):
+        with tempfile.TemporaryDirectory() as temp, contextlib.redirect_stdout(io.StringIO()):
+            root = Path(temp)
+            config = self.fixture(root, "action_only")
+            config["training"]["epochs"] = 2
+            path = root/"config.yaml"
+            path.write_text(yaml.safe_dump(config))
+            args = ["train", "--config", str(path)]
+            checkpoint = root/"action_only/checkpoints/latest.pt"
+            with patch("sys.argv", args + ["--stop-after-epoch", "1"]):
+                main()
+            first = torch.load(checkpoint, weights_only=False)
+            self.assertEqual(first["epoch"], 1)
+            self.assertEqual(first["config"]["training"]["epochs"], 2)
+            self.assertFalse(first["metrics"])  # A pause is not the final validation epoch.
+            with patch("sys.argv", args + ["--resume", "--checkpoint", str(checkpoint)]):
+                main()
+            resumed = torch.load(checkpoint, weights_only=False)
+            self.assertEqual(resumed["epoch"], 2)
+            with patch("sys.argv", args + ["--output-dir", str(root/"uninterrupted")]):
+                main()
+            full = torch.load(root/"uninterrupted/checkpoints/latest.pt", weights_only=False)
+            for key in resumed["model"]:
+                torch.testing.assert_close(resumed["model"][key], full["model"][key], rtol=0, atol=0)
 
     def test_both_variants_train_checkpoint_evaluate_and_probe(self):
         from experiments.continuous_dynamics.probe import main as probe

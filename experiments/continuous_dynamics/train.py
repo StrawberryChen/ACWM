@@ -12,6 +12,7 @@ import yaml
 
 from experiment_tracking import ExperimentLogger, append_metrics
 from experiments.avs_target.data import source_signature, check_source_provenance
+from .checkpoint_io import read_checkpoint, require_mounted_drive, save_checkpoint
 from .data import resolve, loader, validate_splits
 from .model import ContinuousWorldModel
 from .losses import objective
@@ -61,10 +62,6 @@ def train_epoch(model, batches, optimizer, config, device):
     return {f"train/{key}": value/count for key, value in sums.items()}
 
 
-def read_checkpoint(path):
-    return torch.load(path, map_location="cpu", weights_only=False)
-
-
 def load_checkpoint(path, config, model, *, saved=None):
     if saved is None:
         saved = read_checkpoint(path)
@@ -85,7 +82,9 @@ def log_figures(logger, paths, metrics):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/continuous_dynamics.yaml")
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--config")
+    source.add_argument("--workflow", help="Colab workflow YAML")
     parser.add_argument("--data-config", help="borrow existing raw-step NPZ paths/action units/device")
     parser.add_argument("--output-dir")
     parser.add_argument("--checkpoint")
@@ -93,12 +92,19 @@ def main():
     parser.add_argument("--mode", choices=("train", "evaluate"), default="train")
     parser.add_argument("--split", choices=("val", "test"), default="val")
     parser.add_argument("--epochs", type=int)
+    parser.add_argument("--stop-after-epoch", type=int, help="Pause after this absolute epoch without changing the training schedule")
     parser.add_argument("--integration-steps", type=int)
     parser.add_argument("--margin", type=float)
     parser.add_argument("--device")
     parser.add_argument("--no-wandb", action="store_true")
     args = parser.parse_args()
-    config = resolve(args.config, args.data_config, args.output_dir)
+    if args.workflow:
+        if args.data_config or args.output_dir or args.epochs is not None:
+            parser.error("edit the workflow YAML instead of overriding its data, output or epochs")
+        from .workflow import Workflow
+        config = Workflow.from_yaml(args.workflow).config
+    else:
+        config = resolve(args.config or "configs/continuous_dynamics.yaml", args.data_config, args.output_dir)
     if args.epochs is not None:
         config["training"]["epochs"] = args.epochs
     if args.integration_steps is not None:
@@ -115,6 +121,10 @@ def main():
         parser.error("training a checkpoint requires explicit --resume")
     if args.mode == "evaluate" and not args.checkpoint:
         parser.error("independent evaluation requires --checkpoint")
+    if args.stop_after_epoch is not None and (
+        args.mode != "train" or not 1 <= args.stop_after_epoch <= config["training"]["epochs"]
+    ):
+        parser.error("--stop-after-epoch must be within the training schedule")
     if config["training"]["epochs"] < 1 or config["validation"]["visualization_interval"] < 1:
         raise ValueError("positive epochs/visualization interval required")
     val_interval = config["validation"].setdefault("interval", 1)
@@ -122,6 +132,7 @@ def main():
         raise ValueError("validation.interval must be a positive integer")
     if config["data"]["batch_size"] < 1 or config["validation"]["samples"] < 2:
         raise ValueError("positive batch size and >=2 validation samples required")
+    require_mounted_drive(config["output_dir"])
     random.seed(config["seed"])
     np.random.seed(config["seed"])
     torch.manual_seed(config["seed"])
@@ -143,6 +154,9 @@ def main():
     logger_config = deepcopy(config["wandb"])
     if args.mode == "evaluate":
         logger_config["name"] += "_evaluate_"+args.split
+        logger_config.pop("id", None)
+    elif args.resume and logger_config.get("id") and logger_config.get("mode", "online") == "online":
+        logger_config["resume"] = "allow"
     logger = ExperimentLogger(logger_config, config)
     print(f"Raw-step relative actions; no planning. Training validation every {val_interval} epoch(s) and on the final epoch.")
     try:
@@ -179,7 +193,8 @@ def main():
         checkpoint_dir = output/"checkpoints"
         checkpoint_dir.mkdir(exist_ok=True)
         epochs = config["training"]["epochs"]
-        for epoch in range(start+1, epochs+1):
+        end = args.stop_after_epoch or epochs
+        for epoch in range(start+1, end+1):
             metrics = train_epoch(model, batches, optimizer, config, device)
             validation, improved = {}, False
             message = f"Epoch {epoch}/{epochs} total={metrics['train/loss_total']:.6g}"
@@ -190,15 +205,18 @@ def main():
                 best = min(best, validation["val/loss_total"])
                 message += (f" val_pred={metrics['val/loss_pred']:.6g} std={metrics['collapse/feature_std']:.5g} "
                             f"rank={metrics['collapse/effective_rank']:.3g} violation={metrics['dynamics/progress_violation_ratio']:.3g}")
-            append_metrics(output/"metrics.jsonl", epoch, metrics)
-            print(message if validation else message+" (validation skipped)")
             checkpoint = dict(model=model.state_dict(), optimizer=optimizer.state_dict(), config=config,
                               epoch=epoch, best=best, metrics=validation, initial_encoder=initial_encoder,
                               train_sources=provenance, torch_rng=torch.get_rng_state(), python_rng=random.getstate(),
                               numpy_rng=np.random.get_state(), cuda_rng=torch.cuda.get_rng_state_all() if device.type == "cuda" else None)
-            torch.save(checkpoint, checkpoint_dir/"latest.pt")
             if improved:
-                torch.save(checkpoint, checkpoint_dir/"best_loss.pt")
+                save_checkpoint(checkpoint_dir/"best_loss.pt", checkpoint, verify=epoch == end)
+            verify = epoch in (1, end)
+            save_checkpoint(checkpoint_dir/"latest.pt", checkpoint, verify=verify)
+            if verify:
+                print(f"Checkpoint read back from mounted filesystem: epoch={epoch}, {checkpoint_dir/'latest.pt'}", flush=True)
+            append_metrics(output/"metrics.jsonl", epoch, metrics)
+            print(message if validation else message+" (validation skipped)")
             if validation and (epoch == 1 or epoch % config["validation"]["visualization_interval"] == 0 or epoch == epochs):
                 torch.save(values, output/"diagnostics.pt")
                 figure_paths = visualize(model, val_dataset, config, output/"visualizations", epoch, device)

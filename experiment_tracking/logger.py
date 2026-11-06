@@ -16,9 +16,10 @@ class ExperimentLogger:
             except ImportError as error:
                 raise ImportError("W&B logging is enabled; install the 'colab' extra or wandb") from error
             self.wandb = wandb
+            run_identity = {key: config[key] for key in ("id", "resume") if key in config}
             self.run = wandb.init(project=config.get("project", "acwm"), entity=config.get("entity"),
                                   name=config.get("name"), mode=config.get("mode", "online"),
-                                  config=full_config)
+                                  config=full_config, **run_identity)
 
     def log(self, values: dict[str, Any], step: int) -> None:
         if self.run is not None:

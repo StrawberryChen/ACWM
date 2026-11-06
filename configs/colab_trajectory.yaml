@@ -1,0 +1,24 @@
+# Change run_name for any new experiment; keep it unchanged across runtime restarts.
+variant: action_per_step  # action_per_step | state_action_per_step | action_global | state_action_global
+run_name: action_per_step_retry_01
+runs_root: /content/drive/MyDrive/ACWM/trajectory_runs
+
+# Unlisted settings come from the selected model preset. Any existing preset
+# parameter can be overridden here without changing training code.
+overrides:
+  seed: 42
+  training:
+    epochs: 100
+    learning_rate: 0.0003
+  loss:
+    weight: 0.1
+    margin: 0.1
+  validation:
+    interval: 5
+  wandb:
+    enabled: true
+
+planning:
+  split: val
+  episodes: 10
+  max_steps: 100
