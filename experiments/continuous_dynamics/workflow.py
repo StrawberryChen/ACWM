@@ -7,6 +7,7 @@ import sys
 
 from .checkpoint_io import require_mounted_drive, verify_checkpoint
 from .data import load_config, validate_splits
+from .leworld_data import H5_PATH, split_counts, uses_leworld
 from experiments.avs_target.data import merge
 
 
@@ -63,7 +64,7 @@ class Workflow:
 
     def __init__(self, path, settings):
         self.path = Path(path).resolve()
-        unknown = set(settings) - {"variant", "run_name", "runs_root", "overrides", "planning"}
+        unknown = set(settings) - {"variant", "run_name", "runs_root", "overrides", "planning", "dataset"}
         if unknown:
             raise ValueError(f"Unknown workflow settings: {sorted(unknown)}")
         variant, name = settings["variant"], settings["run_name"]
@@ -75,6 +76,13 @@ class Workflow:
         self.run = root / variant / name
         self.checkpoint = self.run / "checkpoints" / "latest.pt"
         self.config = load_config(REPO / "configs" / VARIANTS[variant])
+        dataset = settings.get("dataset", "legacy_npz")
+        if dataset == "leworld_hdf5":
+            self.config["data"].update(dataset=dataset, h5_path=H5_PATH)
+            for split in ("train", "val", "test"):
+                self.config["data"].pop(f"{split}_paths", None)
+        elif dataset != "legacy_npz":
+            raise ValueError(f"Unknown dataset: {dataset}")
         overrides = settings.get("overrides", {})
         if set(overrides) - {"seed", "device", "data", "model", "loss", "training", "validation", "probe", "wandb"}:
             raise ValueError("Use workflow variant/runs_root/run_name to select model and output")
@@ -98,8 +106,16 @@ class Workflow:
         require_mounted_drive(self.run)
         if self.config["device"].startswith("cuda") and not torch.cuda.is_available():
             raise RuntimeError("Select a GPU runtime in Colab before training.")
-        paths = validate_splits(self.config)
-        print(f"Dataset episodes: { {key: len(value) for key, value in paths.items()} }")
+        if uses_leworld(self.config):
+            counts = split_counts(self.config)
+            print(f"Official LeWorld (episodes, windows) by split: {counts}", flush=True)
+            batch = self.config["data"]["batch_size"]
+            if batch < 1:
+                raise ValueError("batch_size must be positive")
+            print(f"Optimizer steps per full epoch: {(counts['train'][1] + batch - 1) // batch:,}", flush=True)
+        else:
+            paths = validate_splits(self.config)
+            print(f"Legacy dataset episodes: { {key: len(value) for key, value in paths.items()} }")
         print(f"Run directory: {self.run}\nCheckpoint: {self.checkpoint}")
         if self.checkpoint.exists():
             self.verify()

@@ -4,6 +4,7 @@ import torch
 import numpy as np
 from torch.nn import functional as F
 from experiments.avs_target.data import TrajectoryWindows, load_config, validate_splits
+from .leworld_data import LeWorldWindows, uses_leworld
 
 
 class RawTransitionDataset(TrajectoryWindows):
@@ -57,15 +58,22 @@ class RawTransitionDataset(TrajectoryWindows):
                 "actions": torch.from_numpy(actions[t:t+self.horizon].copy()).float(),
                 "episode": episode, "timestep": t}
 
+    def episode_states(self, episode):
+        with np.load(self.paths[episode]) as data:
+            return data["states"].copy() if "states" in data else None
+
 
 def loader(config, split, limit=None, shuffle=False, horizon=None):
     settings = config["data"]
     if settings["action_mode"] != "relative":
         raise ValueError("current prepared NPZ actions are relative, not absolute target positions")
-    dataset = RawTransitionDataset(settings[f"{split}_paths"], config["model"]["image_size"],
-                                   settings["cache_episodes"], settings["action_scale"],
-                                   settings.get("frame_value_range", "auto"),
-                                   config["model"].get("horizon", 1) if horizon is None else horizon)
+    horizon = config["model"].get("horizon", 1) if horizon is None else horizon
+    if uses_leworld(config):
+        dataset = LeWorldWindows(config, split, horizon)
+    else:
+        dataset = RawTransitionDataset(settings[f"{split}_paths"], config["model"]["image_size"],
+                                       settings["cache_episodes"], settings["action_scale"],
+                                       settings.get("frame_value_range", "auto"), horizon)
     selected = dataset
     if limit and len(dataset) > limit:
         indices = torch.randperm(len(dataset), generator=torch.Generator().manual_seed(config["seed"]))[:limit]

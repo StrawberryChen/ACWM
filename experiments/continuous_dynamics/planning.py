@@ -18,6 +18,7 @@ from experiments.avs_target.data import load_config, file_sha256
 from .colab import select_checkpoint
 from .run_paths import checkpoint_path
 from .train import build_model, load_checkpoint, read_checkpoint
+from .leworld_data import planning_cases, uses_leworld
 
 
 def action_bounds(env, model_scale, env_scale):
@@ -121,7 +122,7 @@ def video_frame(current, goal):
 
 
 @torch.no_grad()
-def evaluate_planning(model, config, settings, dataset_paths, output, device):
+def evaluate_planning(model, config, settings, dataset_paths, output, device, *, split="val"):
     import imageio.v2 as imageio
     settings = dict(settings)
     settings["horizon"] = model.horizon
@@ -137,13 +138,15 @@ def evaluate_planning(model, config, settings, dataset_paths, output, device):
                                             observation_width=size, observation_height=size,
                                             with_target=settings["with_target"], seed=settings["seed"],
                                             goal_offset_steps=settings["goal_offset_steps"]),
-                                  1, 2, device, dataset_paths=dataset_paths)
+                                  1, 2, device, dataset_paths=dataset_paths or [])
     print("Sampling fixed dataset start/goal cases (state labels used ONLY for environment evaluation)...", flush=True)
-    cases = evaluator._dataset_eval_cases(settings["episodes"])
+    cases = (planning_cases(config, split, settings["episodes"], settings["goal_offset_steps"], settings["seed"])
+             if uses_leworld(config) else evaluator._dataset_eval_cases(settings["episodes"]))
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     (output/"cases.json").write_text(json.dumps([
-        dict(path=case["path"], timestep=int(case["current"]), start=case["start_state"].tolist(),
+        dict(path=case["path"], source_episode=case.get("source_episode"),
+             timestep=int(case["current"]), start=case["start_state"].tolist(),
              goal=case["goal_state"].tolist()) for case in cases], indent=2))
     scale = float(config["data"]["action_scale"])
     results = {}
@@ -311,7 +314,8 @@ def main():
                     note="exploratory 10-case evaluation, not a claim of official LeWorld benchmark alignment")
     (output/"metadata.json").write_text(json.dumps(metadata, indent=2))
     print(f"Checkpoint: {args.checkpoint}\nPlanning output: {output}\nVideos: actual execution LEFT, fixed goal RIGHT", flush=True)
-    result = evaluate_planning(model, config, settings, config["data"][f"{args.split}_paths"], output, device)
+    result = evaluate_planning(model, config, settings, config["data"].get(f"{args.split}_paths"),
+                               output, device, split=args.split)
     print(json.dumps({policy: value["summary"] for policy, value in result.items()}, indent=2), flush=True)
 
 

@@ -14,6 +14,7 @@ from experiment_tracking import ExperimentLogger, append_metrics
 from experiments.avs_target.data import source_signature, check_source_provenance
 from .checkpoint_io import read_checkpoint, require_mounted_drive, save_checkpoint
 from .data import resolve, loader, validate_splits
+from .leworld_data import provenance as leworld_provenance, split_counts, uses_leworld
 from .model import ContinuousWorldModel
 from .losses import objective
 from .diagnostics import evaluate
@@ -74,8 +75,8 @@ def load_checkpoint(path, config, model, *, saved=None):
     if (saved["config"]["model"] != config["model"] or saved["config"]["loss"] != config["loss"]
             or saved["config"].get("experiment") != config.get("experiment")):
         raise ValueError("checkpoint model/loss mismatch; use matching saved config")
-    for key in ("action_mode", "action_scale"):
-        if saved["config"]["data"][key] != config["data"][key]:
+    for key in ("action_mode", "action_scale", "dataset"):
+        if saved["config"]["data"].get(key) != config["data"].get(key):
             raise ValueError("checkpoint action semantics mismatch")
     model.load_state_dict(saved["model"])
     return saved
@@ -144,7 +145,9 @@ def main():
     random.seed(config["seed"])
     np.random.seed(config["seed"])
     torch.manual_seed(config["seed"])
-    paths = validate_splits(config)
+    paths = None if uses_leworld(config) else validate_splits(config)
+    if paths is None:
+        print(f"Official LeWorld episodes/windows by split: {split_counts(config)}", flush=True)
     device = torch.device(config["device"])
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("select a GPU Colab runtime, or explicitly --device cpu for smoke tests")
@@ -178,8 +181,9 @@ def main():
             logger.log(metrics, step=0)
             print(json.dumps({k: v for k, v in metrics.items() if isinstance(v, (float, int))}, indent=2))
             return
-        provenance = source_signature(paths["train"])
-        batches, _ = loader(config, "train", shuffle=True)
+        provenance = leworld_provenance(config) if paths is None else source_signature(paths["train"])
+        batches, train_dataset = loader(config, "train", shuffle=True)
+        print(f"Training windows: {len(train_dataset):,}; optimizer steps per epoch: {len(batches):,}", flush=True)
         optimizer = torch.optim.AdamW(model.parameters(), lr=config["training"]["learning_rate"],
                                       weight_decay=config["training"]["weight_decay"])
         # Constant LR: no implicit scheduler changes across K/margin experiments.

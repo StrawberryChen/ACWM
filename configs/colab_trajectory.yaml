@@ -1,7 +1,8 @@
 # Change run_name for any new experiment; keep it unchanged across runtime restarts.
 variant: action_per_step  # action_per_step | state_action_per_step | action_global | state_action_global
-run_name: action_per_step_retry_01
-runs_root: /content/drive/MyDrive/ACWM/trajectory_runs
+run_name: action_per_step_leworld_01
+runs_root: /content/drive/MyDrive/ACWM/trajectory_runs_leworld
+dataset: leworld_hdf5
 
 # Unlisted settings come from the selected model preset. Any existing preset
 # parameter can be overridden here without changing training code.
@@ -19,6 +20,6 @@ overrides:
     enabled: true
 
 planning:
-  split: val
+  split: test
   episodes: 10
   max_steps: 100

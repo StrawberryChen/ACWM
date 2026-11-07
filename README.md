@@ -99,6 +99,14 @@ agent/environment latent prediction error；planning MP4 展示 CEM 在环境中
 旧的 `lerobot/pusht_image` 转换数据只有 2D agent state，需改用
 `scripts/prepare_pusht_zarr.py` 从原始 Diffusion Policy Push-T zarr 重新转换。
 
+## 新 Push-T 正式实验的数据基线
+
+后续正式实验统一使用 LeWorldModel 发布的[全量 Push-T 专家数据](https://huggingface.co/datasets/quentinll/lewm-pusht)，即 `pusht_expert_train.h5.zst`。论文中的约两万条指完整 episodes，不是滑动窗口数；以接入时从文件读出的实际数量为准。历史 Diffusion Policy 小数据集只用于复现旧结果或 smoke test，不作为新实验的正式对照。
+
+Trajectory / Velocity 的 Colab 工作流默认使用官方 HDF5。把压缩包放到 `MyDrive/ACWM/pusht_expert_train.h5.zst`，运行笔记本 01 后会校验并解压到 `/content/acwm_data/pusht_expert_train.h5`（约 43.1 GiB）。只在新运行时解压，同一运行时复用。Probe 和 Planning 继续读取同一份本地 HDF5；配置、权重和视频仍写入 Drive。历史 checkpoint 和旧 NPZ 配置不迁移。
+
+数据按固定 seed 42 做 episode 级 80/10/10 划分。日志记录各 split 的 episode 数、窗口数和每轮优化步数。Velocity 窗口仍是 26 帧和 25 个 raw action；官方动作本身为相对控制量，转换到现有模型尺度时乘以 `100 / action_scale`，不再减 agent 坐标。7D 状态只用于 probe、可视化和 Planning reset，不进入世界模型训练。全量每轮会比历史小数据长很多；请先看 02 的窗口数和训练进度估计，不要把旧实验每轮的耗时用于全量。
+
 ## 多步训练接口
 
 `ACWMTrainer.compute_rollout` 接受常规 history 字段，并额外需要：

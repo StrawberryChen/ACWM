@@ -31,11 +31,11 @@ def visualize(model, dataset, config, output, epoch, device):
     for sample in samples:
         ep = sample["episode"]
         if ep not in states:
-            with np.load(dataset.paths[ep]) as data:
-                if "states" not in data:
-                    available = False
-                    break
-                states[ep] = data["states"][:, :5].copy()
+            state = dataset.episode_states(ep)
+            if state is None:
+                available = False
+                break
+            states[ep] = state[:, :5]
     if available:
         labels = np.stack([states[s["episode"]][s["timestep"]] for s in samples])
         fig, axes = plt.subplots(1, 5, figsize=(20, 4))
@@ -50,10 +50,11 @@ def visualize(model, dataset, config, output, epoch, device):
     else:
         print("No simulator labels: physical-color PCA skipped (training unaffected).")
     # Entire first validation episode in temporal order, not shuffled minibatches.
-    raw, _ = dataset.episode(0)
+    first_episode = dataset[0]["episode"]
+    raw, _ = dataset.episode(first_episode)
     trajectory = []
     for start in range(0, len(raw), config["data"]["batch_size"]):
-        chunk = dataset.prepare_frames(raw[start:start+config["data"]["batch_size"]], 0).to(device)
+        chunk = dataset.prepare_frames(raw[start:start+config["data"]["batch_size"]], first_episode).to(device)
         trajectory.append(model.encoder(chunk).cpu())
     trajectory = torch.cat(trajectory)
     xy_trajectory = project(trajectory)

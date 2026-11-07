@@ -10,6 +10,7 @@ from experiment_tracking import ExperimentLogger
 from experiments.avs_target.probe import fit_probes
 from experiments.avs_target.data import file_sha256
 from .data import load_config, loader, validate_splits
+from .leworld_data import split_counts, uses_leworld
 from .run_paths import checkpoint_path
 from .train import load_checkpoint, build_model, read_checkpoint
 
@@ -17,17 +18,18 @@ from .train import load_checkpoint, build_model, read_checkpoint
 @torch.no_grad()
 def extract(encoder, config, split, limit, device):
     import numpy as np
-    print(f"[{split}] Loading/checking NPZ episodes from Drive (may take time)...", flush=True)
+    print(f"[{split}] Loading dataset index…", flush=True)
     batches, dataset = loader(config, split, limit=limit, horizon=1)
     labels = {}
-    for i, path in enumerate(tqdm(dataset.paths, desc=f"{split} state labels", dynamic_ncols=True)):
-        with np.load(path) as data:
-            if "states" not in data or data["states"].shape[-1] < 5:
-                raise ValueError("probe needs states [T,>=5]; world-model training does not")
-            labels[i] = data["states"][:, :5].copy()
     features, targets = [], []
     for batch in tqdm(batches, desc=f"{split} encoder features", dynamic_ncols=True):
         features.append(encoder(batch["frames"][:, 0].to(device)).cpu())
+        for ep in map(int, batch["episode"]):
+            if ep not in labels:
+                state = dataset.episode_states(ep)
+                if state is None or state.shape[-1] < 5:
+                    raise ValueError("probe needs states [T,>=5]; world-model training does not")
+                labels[ep] = state[:, :5]
         raw = torch.from_numpy(np.stack([labels[int(ep)][int(t)] for ep, t in zip(batch["episode"], batch["timestep"])]))
         targets.append(torch.cat((raw[:, :4], raw[:, 4:5].sin(), raw[:, 4:5].cos()), -1))
     return torch.cat(features).float(), torch.cat(targets).float()
@@ -57,7 +59,10 @@ def main():
     if args.no_wandb:
         config["wandb"]["enabled"] = False
     print("Probe: checking episode-disjoint dataset paths...", flush=True)
-    validate_splits(config)
+    if uses_leworld(config):
+        print(f"Official LeWorld episodes/windows by split: {split_counts(config)}", flush=True)
+    else:
+        validate_splits(config)
     torch.manual_seed(config["seed"])
     device = torch.device(config["device"])
     if device.type == "cuda" and not torch.cuda.is_available():

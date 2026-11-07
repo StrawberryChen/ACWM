@@ -1,8 +1,9 @@
 variant: velocity_sigreg
-run_name: velocity_sigreg_01
-runs_root: /content/drive/MyDrive/ACWM/trajectory_runs
+run_name: velocity_sigreg_leworld_01
+runs_root: /content/drive/MyDrive/ACWM/trajectory_runs_leworld
+dataset: leworld_hdf5
 overrides: {}
 planning:
-  split: val
+  split: test
   episodes: 10
   max_steps: 100
