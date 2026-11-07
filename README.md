@@ -107,6 +107,12 @@ Trajectory / Velocity 的 Colab 工作流默认使用官方 HDF5。把压缩包�
 
 数据按固定 seed 42 做 episode 级 80/10/10 划分。日志记录各 split 的 episode 数、窗口数和每轮优化步数。Velocity 窗口仍是 26 帧和 25 个 raw action；官方动作本身为相对控制量，转换到现有模型尺度时乘以 `100 / action_scale`，不再减 agent 坐标。7D 状态只用于 probe、可视化和 Planning reset，不进入世界模型训练。全量每轮会比历史小数据长很多；请先看 02 的窗口数和训练进度估计，不要把旧实验每轮的耗时用于全量。
 
+### 观测尺度 Velocity + BatchNorm
+
+在 Colab 的 02 选择 `velocity_obs5_bn`（默认），旧 raw-step 模型仍可选择 `velocity_sigreg`。不重新下载或生成数据。默认 25 个 raw action 打成 5 个有序的 10 维动作块，读取第 0/5/10/15/20/25 帧。每个动作块监督一个相邻观测 latent 差分；从无噪当前 latent 开始，Euler 依次积分 5 个块。视觉投影用 `Linear(192→2048) → BatchNorm1d → GELU → Linear(2048→192)`；原 velocity MSE 和 SIGReg 权重不变。
+
+CEM 仍搜索 25 个 raw action，并用第 25 步预测评分。MPC 仍逐 raw action 执行和重规划，因此默认执行一步时，`executed_endpoint_mse` 为空（没有预测第 1 步）。验证继续记录 `val/pred_step_5/10/15/20/25` 和真实/打乱动作对照。要单独消融 BN，可复制 `configs/colab_velocity_obs5_bn.yaml`，用新实验名并设置 `overrides.model.batchnorm_projector: false`。
+
 ## 多步训练接口
 
 `ACWMTrainer.compute_rollout` 接受常规 history 字段，并额外需要：

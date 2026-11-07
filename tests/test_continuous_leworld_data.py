@@ -66,3 +66,15 @@ def test_archive_checks_and_reuse(fixture, tmp_path, monkeypatch):
     assert official.prepare_colab_leworld(archive, target).read_bytes() == data
     archive.unlink()
     assert official.prepare_colab_leworld(archive, target) == target
+
+
+def test_observation_stride_keeps_all_raw_actions_and_probe_frames(fixture):
+    _, config, offsets, _ = fixture
+    config["model"].update(horizon=6, action_block=3)
+    _, dataset = loader(config, "train")
+    item = dataset[0]
+    start = offsets[item["episode"]] + item["timestep"]
+    np.testing.assert_allclose(item["frames"][:, 0, 0, 0] * 255, [start, start + 3, start + 6])
+    np.testing.assert_allclose(item["actions"][:, 0] * 512, np.arange(start, start + 6), rtol=1e-6)
+    _, probe = loader(config, "train", horizon=1)
+    assert probe[0]["frames"].shape[0] == 2

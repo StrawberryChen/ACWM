@@ -146,11 +146,14 @@ def provenance(config):
 class LeWorldWindows(Dataset):
     """A compact prefix-sum index; no pixel I/O at startup or simulator labels in batches."""
 
-    def __init__(self, config, split, horizon):
+    def __init__(self, config, split, horizon, observation_stride=1):
         self.path = config["data"]["h5_path"]
         self.image_size = config["model"]["image_size"]
         self.action_factor = NATIVE_ACTION_SCALE / float(config["data"]["action_scale"])
         self.horizon = int(horizon)
+        self.observation_stride = observation_stride
+        if type(observation_stride) is not int or observation_stride < 1 or self.horizon % observation_stride:
+            raise ValueError("observation_stride must divide the raw horizon")
         if self.horizon < 1 or not np.isfinite(self.action_factor) or self.action_factor <= 0:
             raise ValueError("positive HDF5 horizon and model action scale required")
         self.offsets, self.lengths = episode_metadata(self.path)
@@ -204,7 +207,7 @@ class LeWorldWindows(Dataset):
         episode, t = self.window_index(index)
         start = int(self.offsets[episode]) + t
         stop = start + self.horizon
-        frames = self._file()["pixels"][start:stop + 1]
+        frames = self._file()["pixels"][start:stop + 1:self.observation_stride]
         return dict(frames=self.prepare_frames(frames, episode), actions=torch.from_numpy(self._actions(start, stop)),
                     episode=episode, timestep=t)
 

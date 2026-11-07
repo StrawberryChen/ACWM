@@ -1,0 +1,10 @@
+base: continuous_velocity_sigreg.yaml
+output_dir: /content/drive/MyDrive/ACWM/trajectory_runs_leworld/velocity_obs5_bn/velocity_obs5_bn_01
+data:
+  dataset: leworld_hdf5
+  h5_path: /content/acwm_data/pusht_expert_train.h5
+model:
+  action_block: 5
+  batchnorm_projector: true
+wandb:
+  name: velocity_obs5_bn_01

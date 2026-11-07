@@ -1,0 +1,3 @@
+base: colab_velocity_sigreg.yaml
+variant: velocity_obs5_bn
+run_name: velocity_obs5_bn_01

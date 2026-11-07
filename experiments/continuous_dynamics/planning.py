@@ -66,6 +66,9 @@ class LatentTrajectoryCEM:
         model.eval()
         cfg = self.settings
         horizon, count = cfg["horizon"], cfg["num_candidates"]
+        stride = getattr(model, "rollout_stride", 1)
+        if horizon % stride:
+            raise ValueError("CEM horizon must end on a predicted observation")
         assert start.ndim == 2 and start.shape == goal.shape and len(start) == 1
         if horizon != model.horizon:
             raise ValueError("use the checkpoint's configured raw-step horizon")
@@ -83,7 +86,8 @@ class LatentTrajectoryCEM:
             costs, predictions = [], []
             for batch in actions.split(cfg["candidate_batch_size"]):
                 # Roll out each candidate independently. Goal is NOT a model input.
-                predicted = model.rollout(start.expand(len(batch), -1), batch)  # [N,H,192]
+                predicted = model.rollout(start.expand(len(batch), -1), batch)  # [N,H_raw/stride,192]
+                assert predicted.shape == (len(batch), horizon // stride, start.shape[-1])
                 costs.append((predicted[:, -1]-goal).square().mean(-1))
                 predictions.append(predicted)
             costs, predictions = torch.cat(costs), torch.cat(predictions)
@@ -99,7 +103,16 @@ class LatentTrajectoryCEM:
         if start.device.type == "cuda":
             torch.cuda.synchronize(start.device)
         return dict(actions=best_actions, prediction=best_prediction, cost=best_cost,
+                    prediction_raw_steps=list(range(stride, horizon + 1, stride)),
                     seconds=time.perf_counter()-begin)
+
+
+def executed_endpoint_mse(plan, actual, observed):
+    """Only compare an observation to a prediction at the same raw offset."""
+    if actual not in plan["prediction_raw_steps"]:
+        return None
+    index = plan["prediction_raw_steps"].index(actual)
+    return float((plan["prediction"][index:index + 1]-observed).square().mean())
 
 
 def rendered_frame(env, evaluator, settings):
@@ -207,12 +220,14 @@ def evaluate_planning(model, config, settings, dataset_paths, output, device, *,
                             # Number actually executed may be <take on success/truncation.
                             actual = step-(plans[-1]["end_step"] if plans else 0)
                             row = dict(end_step=step, cost=plan["cost"], seconds=plan["seconds"],
-                                       executed_endpoint_mse=float((plan["prediction"][actual-1:actual]-observed).square().mean()),
+                                       executed_raw_steps=actual,
+                                       executed_endpoint_mse=executed_endpoint_mse(plan, actual, observed),
                                        observed_goal_latent_mse=float((observed-goal).square().mean()),
                                        environment_goal_distance=real_goal_distances[-1])
                             plans.append(row)
                             np.savez_compressed(policy_dir/f"episode_{episode:03d}_plan_{step:04d}.npz",
                                                 actions=actions.cpu().numpy(), predicted_latents=plan["prediction"].cpu().numpy(),
+                                                prediction_raw_steps=np.asarray(plan["prediction_raw_steps"]),
                                                 goal_latent=goal.cpu().numpy(), observed_latent=observed.cpu().numpy())
                             warm_start = actions[take:]
                 finally:
@@ -307,6 +322,7 @@ def main():
                     experiment=config["experiment"], direction_mode=getattr(model, "direction_mode", None),
                     direction_scope=getattr(model, "direction_scope", None),
                     trajectory_readout_stride=getattr(model, "readout_stride", 1),
+                    prediction_raw_stride=getattr(model, "rollout_stride", 1),
                     split=args.split, settings={**settings, "horizon": model.horizon},
                     model_action_scale=config["data"]["action_scale"], env_action_scale=settings["env_action_scale"],
                     cost="mean squared terminal predicted latent vs encoded fixed goal image",

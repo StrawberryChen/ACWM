@@ -38,10 +38,11 @@ class ActionSensitivityDiagnostics:
         n = config["action_samples"]
         if n < 2 or config["action_high"] <= config["action_low"]:
             raise ValueError("at least two sampled actions and ordered bounds required")
-        actions = torch.rand(len(state), n, 2, device=state.device, generator=generator)
+        action_dim = getattr(field, "action_dim", 2)
+        actions = torch.rand(len(state), n, action_dim, device=state.device, generator=generator)
         actions = config["action_low"]+(config["action_high"]-config["action_low"])*actions
         velocity = field(state[:, None].expand(-1, n, -1).reshape(-1, state.shape[-1]),
-                         actions.reshape(-1, 2)).reshape(len(state), n, -1)
+                         actions.reshape(-1, action_dim)).reshape(len(state), n, -1)
         i, j = torch.triu_indices(n, n, offset=1, device=state.device)
         return {"action/velocity_distance": float((velocity[:, i]-velocity[:, j]).norm(dim=-1).mean()),
                 "action/velocity_cosine": float(F.cosine_similarity(velocity[:, i], velocity[:, j], dim=-1).mean())}
@@ -92,14 +93,15 @@ def evaluate(model, batches, config, device):
     values = {k: torch.cat(v) for k, v in collected.items()}
     metrics = {k: v/count for k, v in sums.items()}
     metrics.update(CollapseDiagnostics.compute(values["start"]))
-    stride = model.readout_stride if direct_velocity else 1
+    raw_stride = model.rollout_stride if direct_velocity else 1
+    stride = model.readout_stride // raw_stride if direct_velocity else 1
     macro = slice(stride-1, None, stride)
     if trajectory:
         real_sequence = torch.cat((values["start"][:, None], values["target"]), 1)
         transition = real_sequence.diff(dim=1).norm(dim=-1)
         metrics["val/identity_loss"] = float((values["target"][:, macro]-values["start"][:, None]).square().mean())
         for h in range(stride-1, values["target"].shape[1], stride):
-            metrics[f"val/pred_step_{h+1}"] = float((values["prediction"][:, h]-values["target"][:, h]).square().mean())
+            metrics[f"val/pred_step_{(h+1)*raw_stride}"] = float((values["prediction"][:, h]-values["target"][:, h]).square().mean())
     else:
         transition = (values["target"]-values["start"]).norm(dim=-1)
     if direct_velocity:
@@ -139,8 +141,8 @@ def evaluate(model, batches, config, device):
         if direct_velocity:
             source = real_sequence[selected, :-1].to(device)
             delta = target-source
-            correct = model.field(source, values["actions"][selected].to(device))
-            wrong = model.field(source, values["actions"][shuffled[selected]].to(device))
+            correct = model.field(source, model.action_blocks(values["actions"][selected].to(device)))
+            wrong = model.field(source, model.action_blocks(values["actions"][shuffled[selected]].to(device)))
             velocity_error += float((correct-delta).square().mean())*len(selected)
             velocity_shuffle += float((wrong-delta).square().mean())*len(selected)
             prediction, target = prediction[:, macro], target[:, macro]

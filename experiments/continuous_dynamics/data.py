@@ -69,7 +69,9 @@ def loader(config, split, limit=None, shuffle=False, horizon=None):
         raise ValueError("current prepared NPZ actions are relative, not absolute target positions")
     horizon = config["model"].get("horizon", 1) if horizon is None else horizon
     if uses_leworld(config):
-        dataset = LeWorldWindows(config, split, horizon)
+        block = config["model"].get("action_block", 1)
+        stride = block if horizon == config["model"].get("horizon", 1) else 1
+        dataset = LeWorldWindows(config, split, horizon, observation_stride=stride)
     else:
         dataset = RawTransitionDataset(settings[f"{split}_paths"], config["model"]["image_size"],
                                        settings["cache_episodes"], settings["action_scale"],

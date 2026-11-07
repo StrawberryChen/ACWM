@@ -12,7 +12,7 @@ import yaml
 
 from experiments.continuous_dynamics.data import load_config
 from experiments.continuous_dynamics.losses import objective
-from experiments.continuous_dynamics.planning import LatentTrajectoryCEM
+from experiments.continuous_dynamics.planning import LatentTrajectoryCEM, executed_endpoint_mse
 from experiments.continuous_dynamics.train import build_model, main, read_checkpoint
 from experiments.continuous_dynamics.velocity_model import SequentialVelocityWorldModel
 
@@ -56,6 +56,56 @@ class DirectVelocityTests(unittest.TestCase):
         plan = LatentTrajectoryCEM(settings, [-.1, -.1], [.1, .1], "cpu").plan(model, start[:1], result[:1, -1])
         self.assertEqual(plan["actions"].shape, (25, 2))
         self.assertEqual(plan["prediction"].shape, (25, 192))
+
+    def test_observation_blocks_bn_diagnostics_and_cem(self):
+        from experiments.continuous_dynamics.diagnostics import evaluate
+        from experiments.continuous_dynamics.workflow import Workflow
+        config = Workflow.from_yaml("configs/colab_velocity_obs5_bn.yaml").config
+        config.update(device="cpu")
+        config["model"].update(image_size=32, hidden_dim=8, start_fraction=1)
+        config["loss"]["sigreg_projections"] = 4
+        config["validation"]["action_samples"] = 2
+        model = build_model(config)
+        self.assertIsInstance(model.encoder.projection.net[1], torch.nn.BatchNorm1d)
+        self.assertEqual(model.encoder.projection.net[1].num_features, 2048)
+        frames, actions = torch.rand(2, 26, 3, 32, 32), torch.rand(2, 25, 2)
+        blocks = model.action_blocks(actions)
+        self.assertEqual(blocks.shape, (2, 5, 10))
+        torch.testing.assert_close(blocks[:, 2].reshape(2, 5, 2), actions[:, 10:15])
+        with patch.object(model.integrator, "forward", side_effect=AssertionError("training must not use Euler")):
+            result = model(frames[:, ::5], actions)
+            self.assertEqual(result["real_latents"].shape, (2, 6, 192))
+            self.assertEqual(result["velocity_target"].shape, (2, 5, 192))
+            torch.testing.assert_close(result["velocity_target"], result["real_latents"].diff(dim=1))
+            torch.testing.assert_close(result["velocity_prediction"], model.field(result["real_latents"][:, :-1], blocks))
+            objective(result, **config["loss"])["loss_total"].backward()
+        self.assertGreater(model.encoder.projection.net[1].weight.grad.norm(), 0)
+        self.assertGreater(model.field.action_encoder[0].weight.grad.norm(), 0)
+        model.eval()
+        before = model.encoder.projection.net[1].running_mean.clone()
+        stats, values = evaluate(model, [dict(frames=frames, actions=actions)], config, "cpu")
+        self.assertEqual(values["prediction"].shape, (2, 5, 192))
+        self.assertTrue(all(f"val/pred_step_{t}" in stats for t in (5, 10, 15, 20, 25)))
+        self.assertIn("action/shuffle_loss_delta", stats)
+        self.assertIn("action/velocity_shuffle_loss_delta", stats)
+        torch.testing.assert_close(before, model.encoder.projection.net[1].running_mean)
+        with torch.no_grad():
+            torch.testing.assert_close(model(frames[:, ::5], actions)["target"], model(frames, actions)["target"])
+            modified = actions.clone()
+            modified[:, 10:15] *= -1
+            base = model.rollout(values["start"], actions)
+            alternative = model.rollout(values["start"], modified)
+            torch.testing.assert_close(base[:, :2], alternative[:, :2], rtol=0, atol=0)
+            self.assertGreater((base[:, 2] - alternative[:, 2]).norm(), 0)
+        settings = load_config("configs/continuous_trajectory_planning.yaml")
+        settings.update(horizon=25, num_candidates=4, num_elites=2, iterations=2, candidate_batch_size=2)
+        plan = LatentTrajectoryCEM(settings, [-.1, -.1], [.1, .1], "cpu").plan(
+            model, values["start"][:1], values["target"][:1, -1])
+        self.assertEqual(plan["actions"].shape, (25, 2))
+        self.assertEqual(plan["prediction"].shape, (5, 192))
+        self.assertEqual(plan["prediction_raw_steps"], [5, 10, 15, 20, 25])
+        self.assertIsNone(executed_endpoint_mse(plan, 1, plan["prediction"][:1]))
+        self.assertEqual(executed_endpoint_mse(plan, 5, plan["prediction"][:1]), 0.)
 
     def test_short_training_validation_and_frozen_encoder_probe(self):
         from experiments.continuous_dynamics.planning import main as planning
