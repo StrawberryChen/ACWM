@@ -1,7 +1,9 @@
 """One YAML-driven workflow for the continuous trajectory experiments."""
 import hashlib
+import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 
@@ -23,6 +25,28 @@ VARIANTS = {
     "velocity_sigreg": "continuous_velocity_sigreg.yaml",
     "velocity_obs5_bn": "continuous_velocity_obs5_bn.yaml",
 }
+
+
+def _run_streamed(command, cwd):
+    # Child OS file descriptors are not necessarily routed to the notebook cell.
+    # Read both streams and print in the kernel process so Colab receives them.
+    with subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          text=True, errors="replace", bufsize=1, start_new_session=True) as process:
+        try:
+            for line in process.stdout:
+                print(line, end="", flush=True)
+            return process.wait()
+        except KeyboardInterrupt:
+            for sig, timeout in ((signal.SIGINT, 10), (signal.SIGTERM, 5), (signal.SIGKILL, 5)):
+                try:
+                    os.killpg(process.pid, sig)
+                    process.wait(timeout=timeout)
+                    break
+                except ProcessLookupError:
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+            raise
 
 
 def configure_colab(variant, run_name, *, overrides=None, planning=None):
@@ -136,10 +160,11 @@ class Workflow:
         return epoch
 
     def _command(self, module, *flags):
-        result = subprocess.run([sys.executable, "-u", "-m", f"experiments.continuous_dynamics.{module}", *flags],
-                                cwd=REPO)
-        if result.returncode:
-            raise RuntimeError(f"{module} exited with code {result.returncode}; see the original error above.")
+        print(f"Starting {module}; live subprocess output follows…", flush=True)
+        returncode = _run_streamed([sys.executable, "-u", "-m",
+                                    f"experiments.continuous_dynamics.{module}", *flags], REPO)
+        if returncode:
+            raise RuntimeError(f"{module} exited with code {returncode}; see the original error above.")
 
     def first_epoch(self):
         self.preflight()

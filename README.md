@@ -113,6 +113,8 @@ Trajectory / Velocity 的 Colab 工作流默认使用官方 HDF5。把压缩包�
 
 CEM 仍搜索 25 个 raw action，并用第 25 步预测评分。MPC 仍逐 raw action 执行和重规划，因此默认执行一步时，`executed_endpoint_mse` 为空（没有预测第 1 步）。验证继续记录 `val/pred_step_5/10/15/20/25` 和真实/打乱动作对照。要单独消融 BN，可复制 `configs/colab_velocity_obs5_bn.yaml`，用新实验名并设置 `overrides.model.batchnorm_projector: false`。
 
+全量 HDF5 训练按随机打乱的小组混合不同轨迹，缓存每条轨迹解码、缩放后的帧，避免每个重叠窗口随机解压。同一 epoch 仍遍历全部 eligible windows 一次，窗口内容不变。03/04 会在 Colab 单元中转发训练子进程的实时日志：启动阶段、首批、十批、约每 30 秒和每轮结束都会打印；ETA 是本轮估计。首个 batch 的耗时含预取和首次解码。
+
 ## 多步训练接口
 
 `ACWMTrainer.compute_rollout` 接受常规 history 字段，并额外需要：

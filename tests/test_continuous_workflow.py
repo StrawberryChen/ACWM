@@ -1,4 +1,7 @@
 from pathlib import Path
+import contextlib
+import io
+import sys
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
@@ -10,6 +13,14 @@ from experiments.continuous_dynamics.checkpoint_io import save_checkpoint, verif
 
 
 class WorkflowTests(TestCase):
+    def test_streamed_subprocess_sends_stdout_stderr_and_exit_code_to_parent(self):
+        with TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()) as output:
+            code = workflow._run_streamed(
+                [sys.executable, "-u", "-c", "import sys; print('batch 1'); print('batch 2', file=sys.stderr); sys.exit(4)"],
+                root)
+        self.assertEqual(code, 4)
+        self.assertEqual(output.getvalue().splitlines(), ["batch 1", "batch 2"])
+
     def test_failed_checkpoint_does_not_replace_existing_file(self):
         with TemporaryDirectory() as root:
             path = Path(root) / "latest.pt"

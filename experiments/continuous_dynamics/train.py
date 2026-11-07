@@ -1,13 +1,14 @@
 """Independent trainer: two loss terms only, diagnostics every epoch, no planner."""
 import argparse
 from copy import deepcopy
+from datetime import timedelta
 import json
 from pathlib import Path
 import random
+import time
 
 import numpy as np
 import torch
-from tqdm.auto import tqdm
 import yaml
 
 from experiment_tracking import ExperimentLogger, append_metrics
@@ -41,8 +42,11 @@ def build_model(config):
 def train_epoch(model, batches, optimizer, config, device):
     model.train()
     sums, count = {}, 0
-    progress = tqdm(batches, desc="continuous dynamics train", dynamic_ncols=True)
-    for batch in progress:
+    total_batches = len(batches)
+    started = previous_end = last_print = time.monotonic()
+    data_wait = 0.
+    for step, batch in enumerate(batches, 1):
+        data_wait += time.monotonic() - previous_end
         result = model(batch["frames"].to(device), batch["actions"].to(device))
         losses = objective(result, **config["loss"])
         if not torch.isfinite(losses["loss_total"]):
@@ -62,11 +66,18 @@ def train_epoch(model, batches, optimizer, config, device):
         for key, value in gradient_metrics.items():
             sums[key] = sums.get(key, 0.)+value*n
         count += n
-        if "loss_velocity" in losses:
-            progress.set_postfix(velocity=f"{sums['loss_velocity']/count:.6g}", sigreg=f"{sums['loss_sigreg']/count:.6g}")
-        else:
-            progress.set_postfix(pred=f"{sums['loss_pred']/count:.6g}", progress=f"{sums['loss_progress']/count:.6g}")
-    return {f"train/{key}": value/count for key, value in sums.items()}
+        now = time.monotonic()
+        if step in (1, 10, total_batches) or now - last_print >= 30:
+            elapsed = max(now - started, 1e-9)
+            eta = str(timedelta(seconds=round((total_batches - step) * elapsed / step))) if step >= 10 or step == total_batches else "warming up"
+            terms = ("loss_velocity", "loss_sigreg") if "loss_velocity" in losses else ("loss_pred", "loss_progress")
+            line = " ".join(f"{key.removeprefix('loss_')}={sums[key]/count:.6g}" for key in terms)
+            print(f"Train batch {step:,}/{total_batches:,} ({step/total_batches:.2%}) "
+                  f"| {step/elapsed:.2f} batch/s | ETA {eta} | data wait {data_wait/elapsed:.0%} | {line}", flush=True)
+            last_print = now
+        previous_end = time.monotonic()
+    return {**{f"train/{key}": value/count for key, value in sums.items()},
+            "train/data_wait_seconds": data_wait, "train/epoch_seconds": time.monotonic() - started}
 
 
 def load_checkpoint(path, config, model, *, saved=None):
@@ -145,13 +156,17 @@ def main():
     random.seed(config["seed"])
     np.random.seed(config["seed"])
     torch.manual_seed(config["seed"])
+    print("Checking dataset and device…", flush=True)
     paths = None if uses_leworld(config) else validate_splits(config)
     if paths is None:
         print(f"Official LeWorld episodes/windows by split: {split_counts(config)}", flush=True)
     device = torch.device(config["device"])
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("select a GPU Colab runtime, or explicitly --device cpu for smoke tests")
+    print(f"Building model on {device}…", flush=True)
     model = build_model(config).to(device)
+    if args.checkpoint:
+        print(f"Reading checkpoint {args.checkpoint}…", flush=True)
     saved = load_checkpoint(args.checkpoint, config, model) if args.checkpoint else None
     output = Path(config["output_dir"])
     if args.mode == "evaluate":
@@ -168,8 +183,9 @@ def main():
         logger_config.pop("id", None)
     elif args.resume and logger_config.get("id") and logger_config.get("mode", "online") == "online":
         logger_config["resume"] = "allow"
+    print("Initializing experiment logger…", flush=True)
     logger = ExperimentLogger(logger_config, config)
-    print(f"Raw-step relative actions; no planning. Training validation every {val_interval} epoch(s) and on the final epoch.")
+    print(f"Relative raw actions; validation every {val_interval} epoch(s) and on the final epoch.", flush=True)
     try:
         val_batches, val_dataset = loader(config, args.split if args.mode == "evaluate" else "val", config["validation"]["samples"])
         if args.mode == "evaluate":
@@ -181,9 +197,13 @@ def main():
             logger.log(metrics, step=0)
             print(json.dumps({k: v for k, v in metrics.items() if isinstance(v, (float, int))}, indent=2))
             return
+        print("Checking training dataset provenance and building loader…", flush=True)
         provenance = leworld_provenance(config) if paths is None else source_signature(paths["train"])
         batches, train_dataset = loader(config, "train", shuffle=True)
         print(f"Training windows: {len(train_dataset):,}; optimizer steps per epoch: {len(batches):,}", flush=True)
+        if paths is None:
+            print(f"Training sampler: episode-local, up to {batches.batch_sampler.cohort_size} "
+                  "episodes per cohort; all eligible windows retained.", flush=True)
         optimizer = torch.optim.AdamW(model.parameters(), lr=config["training"]["learning_rate"],
                                       weight_decay=config["training"]["weight_decay"])
         # Constant LR: no implicit scheduler changes across K/margin experiments.
@@ -207,10 +227,14 @@ def main():
         epochs = config["training"]["epochs"]
         end = args.stop_after_epoch or epochs
         for epoch in range(start+1, end+1):
+            if hasattr(getattr(batches, "batch_sampler", None), "set_epoch"):
+                batches.batch_sampler.set_epoch(epoch)
+            print(f"Epoch {epoch}/{epochs}: training started (waiting for first batch)…", flush=True)
             metrics = train_epoch(model, batches, optimizer, config, device)
             validation, improved = {}, False
             message = f"Epoch {epoch}/{epochs} total={metrics['train/loss_total']:.6g}"
             if epoch % val_interval == 0 or epoch == epochs:
+                print(f"Epoch {epoch}/{epochs}: validating {len(val_batches.dataset):,} samples…", flush=True)
                 validation, values = evaluate(model, val_batches, config, device)
                 metrics.update(validation)
                 improved = validation["val/loss_total"] < best
@@ -234,6 +258,7 @@ def main():
             append_metrics(output/"metrics.jsonl", epoch, metrics)
             print(message if validation else message+" (validation skipped)")
             if validation and (epoch == 1 or epoch % config["validation"]["visualization_interval"] == 0 or epoch == epochs):
+                print(f"Epoch {epoch}/{epochs}: creating validation visualizations…", flush=True)
                 torch.save(values, output/"diagnostics.pt")
                 figure_paths = visualize(model, val_dataset, config, output/"visualizations", epoch, device)
                 log_figures(logger, figure_paths, metrics)

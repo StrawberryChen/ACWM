@@ -4,7 +4,7 @@ import torch
 import numpy as np
 from torch.nn import functional as F
 from experiments.avs_target.data import TrajectoryWindows, load_config, validate_splits
-from .leworld_data import LeWorldWindows, uses_leworld
+from .leworld_data import EpisodeLocalBatchSampler, LeWorldWindows, uses_leworld
 
 
 class RawTransitionDataset(TrajectoryWindows):
@@ -80,6 +80,14 @@ def loader(config, split, limit=None, shuffle=False, horizon=None):
     if limit and len(dataset) > limit:
         indices = torch.randperm(len(dataset), generator=torch.Generator().manual_seed(config["seed"]))[:limit]
         selected = Subset(dataset, indices.tolist())
+    if uses_leworld(config) and split == "train" and shuffle and selected is dataset:
+        sampler = EpisodeLocalBatchSampler(dataset, settings["batch_size"], config["seed"])
+        dataset.cache_size = sampler.cohort_size + 2
+        workers = settings["num_workers"]
+        return DataLoader(dataset, batch_sampler=sampler, num_workers=workers,
+                          persistent_workers=workers > 0,
+                          generator=torch.Generator().manual_seed(config["seed"]),
+                          pin_memory=config["device"].startswith("cuda")), dataset
     return DataLoader(selected, batch_size=settings["batch_size"], shuffle=shuffle,
                       num_workers=settings["num_workers"], pin_memory=config["device"].startswith("cuda")), dataset
 

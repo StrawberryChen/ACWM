@@ -78,3 +78,35 @@ def test_observation_stride_keeps_all_raw_actions_and_probe_frames(fixture):
     np.testing.assert_allclose(item["actions"][:, 0] * 512, np.arange(start, start + 6), rtol=1e-6)
     _, probe = loader(config, "train", horizon=1)
     assert probe[0]["frames"].shape[0] == 2
+
+
+def test_episode_local_sampler_covers_all_windows_and_caches_exact_inputs(fixture, monkeypatch):
+    import torch
+    _, config, _, _ = fixture
+    config["data"]["batch_size"] = 8
+    config["model"].update(horizon=4, action_block=2)
+    train, cached = loader(config, "train", shuffle=True)
+    _, direct = loader(config, "train")
+    sampler = train.batch_sampler
+    batches = list(sampler)
+    flat = [index for batch in batches for index in batch]
+    assert sorted(flat) == list(range(len(cached)))
+    assert len(batches) == len(train)
+    assert len({cached.window_index(i)[0] for i in batches[0]}) == sampler.cohort_size
+    assert list(sampler) == batches
+    sampler.set_epoch(2)
+    assert list(sampler) != batches
+    assert sorted(i for batch in sampler for i in batch) == list(range(len(cached)))
+    load_episodes = []
+    read = cached.episode
+
+    def counted(episode):
+        load_episodes.append(episode)
+        return read(episode)
+
+    monkeypatch.setattr(cached, "episode", counted)
+    for index in batches[0] + batches[0]:
+        a, b = cached[index], direct[index]
+        for key in ("frames", "actions"):
+            torch.testing.assert_close(a[key], b[key], rtol=0, atol=0)
+    assert len(load_episodes) == sampler.cohort_size

@@ -110,7 +110,7 @@ class DirectVelocityTests(unittest.TestCase):
     def test_short_training_validation_and_frozen_encoder_probe(self):
         from experiments.continuous_dynamics.planning import main as planning
         from experiments.continuous_dynamics.probe import main as probe
-        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()) as console:
             root = Path(tmp)
             config = load_config("configs/continuous_velocity_sigreg.yaml")
             config.update(device="cpu", output_dir=str(root/"run"))
@@ -133,6 +133,9 @@ class DirectVelocityTests(unittest.TestCase):
             path.write_text(yaml.safe_dump(config))
             with patch("sys.argv", ["train", "--config", str(path)]):
                 main()
+            self.assertIn("Train batch 1/1 (100.00%)", console.getvalue())
+            self.assertIn("ETA 0:00:00 | data wait", console.getvalue())
+            self.assertIn("validating 2 samples", console.getvalue())
             checkpoint = root/"run/checkpoints/latest.pt"
             saved = read_checkpoint(checkpoint)
             self.assertIsInstance(build_model(saved["config"]), SequentialVelocityWorldModel)

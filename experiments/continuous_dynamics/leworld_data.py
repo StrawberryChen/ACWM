@@ -1,4 +1,5 @@
 """Raw-step windows over the official LeWorld Push-T HDF5 release."""
+from collections import OrderedDict, deque
 import hashlib
 import json
 import os
@@ -8,7 +9,7 @@ import shutil
 import numpy as np
 import torch
 from torch.nn import functional as F
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 
 
 ARCHIVE = "/content/drive/MyDrive/ACWM/pusht_expert_train.h5.zst"
@@ -160,6 +161,8 @@ class LeWorldWindows(Dataset):
         self.episode_ids = split_episodes(self.lengths)[split]
         self.ends = np.maximum(self.lengths[self.episode_ids] - self.horizon, 0).cumsum()
         self._handle = self._pid = None
+        self._episode_cache = OrderedDict()
+        self.cache_size = 0  # Evaluation/probe read isolated windows directly.
         if not len(self):
             raise ValueError(f"no {split} episodes support horizon {horizon}")
 
@@ -167,13 +170,14 @@ class LeWorldWindows(Dataset):
         return int(self.ends[-1])
 
     def __getstate__(self):
-        return dict(self.__dict__, _handle=None, _pid=None)
+        return dict(self.__dict__, _handle=None, _pid=None, _episode_cache=OrderedDict())
 
     def _file(self):
         pid = os.getpid()
         if self._handle is None or self._pid != pid:
             self._handle = _h5(self.path, rdcc_nbytes=96 * 1024**2, rdcc_nslots=1009)
             self._pid = pid
+            self._episode_cache.clear()
         return self._handle
 
     def window_index(self, index):
@@ -203,13 +207,84 @@ class LeWorldWindows(Dataset):
         start = int(self.offsets[episode])
         return self._file()["state"][start:start + int(self.lengths[episode])]
 
+    def _cached_episode(self, episode):
+        # The sampler reuses a small cohort for several mixed-episode batches.
+        # Decode and resize once per episode per worker, not once per window.
+        self._file()
+        cached = self._episode_cache.get(episode)
+        if cached is None:
+            raw, actions = self.episode(episode)
+            resized = torch.cat([self.prepare_frames(raw[i:i + 32], episode)
+                                 for i in range(0, len(raw), 32)])
+            cached = resized, torch.from_numpy(actions)
+            self._episode_cache[episode] = cached
+            if len(self._episode_cache) > self.cache_size:
+                self._episode_cache.popitem(last=False)
+        else:
+            self._episode_cache.move_to_end(episode)
+        return cached
+
     def __getitem__(self, index):
         episode, t = self.window_index(index)
+        if self.cache_size:
+            frames, actions = self._cached_episode(episode)
+            return dict(frames=frames[t:t + self.horizon + 1:self.observation_stride],
+                        actions=actions[t:t + self.horizon], episode=episode, timestep=t)
         start = int(self.offsets[episode]) + t
         stop = start + self.horizon
         frames = self._file()["pixels"][start:stop + 1:self.observation_stride]
         return dict(frames=self.prepare_frames(frames, episode), actions=torch.from_numpy(self._actions(start, stop)),
                     episode=episode, timestep=t)
+
+
+class EpisodeLocalBatchSampler(Sampler):
+    """Visit every window once per epoch while reusing a shuffled cohort of episodes.
+
+    Round-robin the starts of different episodes instead of making a batch from
+    one trajectory. Replace exhausted episodes so long trajectories do not leave
+    many single-trajectory tail batches. No samples are dropped.
+    """
+
+    def __init__(self, dataset, batch_size, seed):
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
+        self.batch_size, self.seed = batch_size, seed
+        self.ends = dataset.ends
+        self.starts = np.r_[0, self.ends[:-1]]
+        self.cohort_size = min(16, max(4, batch_size // 2))
+        self.epoch = 0
+
+    def set_epoch(self, epoch):
+        self.epoch = epoch
+
+    def __len__(self):
+        return (int(self.ends[-1]) + self.batch_size - 1) // self.batch_size
+
+    def __iter__(self):
+        rng = np.random.default_rng(self.seed + self.epoch)
+        eligible = np.flatnonzero(self.ends > self.starts)
+        episodes = iter(rng.permutation(eligible))
+
+        def window_order(row):
+            return iter(rng.permutation(int(self.ends[row] - self.starts[row])) + self.starts[row])
+
+        windows = deque(window_order(next(episodes)) for _ in range(min(self.cohort_size, len(eligible))))
+        batch = []
+        while windows:
+            window = windows.popleft()
+            index = next(window, None)
+            while index is None and (row := next(episodes, None)) is not None:
+                window = window_order(row)
+                index = next(window, None)
+            if index is None:
+                continue
+            windows.append(window)
+            batch.append(int(index))
+            if len(batch) == self.batch_size:
+                yield batch
+                batch = []
+        if batch:
+            yield batch
 
 
 def planning_cases(config, split, count, goal_offset, seed):
