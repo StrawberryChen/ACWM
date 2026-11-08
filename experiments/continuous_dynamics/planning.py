@@ -46,6 +46,13 @@ def environment_action(action, env, model_scale, env_scale):
     return clipped
 
 
+class CEMNumericalError(FloatingPointError):
+    def __init__(self, message, *, invalid_candidates=0, evaluated_candidates=0):
+        super().__init__(message)
+        self.invalid_candidates = invalid_candidates
+        self.evaluated_candidates = evaluated_candidates
+
+
 class LatentTrajectoryCEM:
     def __init__(self, settings, low, high, device):
         self.settings, self.device = settings, torch.device(device)
@@ -72,12 +79,15 @@ class LatentTrajectoryCEM:
         assert start.ndim == 2 and start.shape == goal.shape and len(start) == 1
         if horizon != model.horizon:
             raise ValueError("use the checkpoint's configured raw-step horizon")
+        if not torch.isfinite(start).all() or not torch.isfinite(goal).all():
+            raise CEMNumericalError("non-finite start or goal latent")
         mean = start.new_zeros(horizon, 2)
         if warm_start is not None:
             mean[:len(warm_start)] = warm_start
         mean = mean.clamp(self.low, self.high)
         std = torch.full_like(mean, cfg["initial_std"])
         best_cost, best_actions, best_prediction = float("inf"), None, None
+        invalid_candidates = evaluated_candidates = 0
         begin = time.perf_counter()
         for _ in range(cfg["iterations"]):
             actions = mean[None]+std[None]*torch.randn(count, horizon, 2, device=start.device, generator=self.generator)
@@ -91,18 +101,28 @@ class LatentTrajectoryCEM:
                 costs.append((predicted[:, -1]-goal).square().mean(-1))
                 predictions.append(predicted)
             costs, predictions = torch.cat(costs), torch.cat(predictions)
-            if not torch.isfinite(costs).all():
-                raise FloatingPointError("non-finite CEM cost")
+            valid = torch.isfinite(costs) & torch.isfinite(predictions).all(dim=(1, 2))
+            valid_count = int(valid.sum())
+            evaluated_candidates += count
+            invalid_candidates += count - valid_count
+            if not valid_count:
+                if best_actions is not None:
+                    break
+                raise CEMNumericalError("no finite CEM candidates",
+                                        invalid_candidates=invalid_candidates,
+                                        evaluated_candidates=evaluated_candidates)
+            costs = costs.masked_fill(~valid, torch.inf)
             index = int(costs.argmin())
             if float(costs[index]) < best_cost:
                 best_cost = float(costs[index])
                 best_actions, best_prediction = actions[index].clone(), predictions[index].clone()
-            elite = actions[costs.topk(cfg["num_elites"], largest=False).indices]
+            elite = actions[costs.topk(min(cfg["num_elites"], valid_count), largest=False).indices]
             mean = elite.mean(0)
             std = elite.std(0, correction=0).clamp_min(cfg["min_std"])
         if start.device.type == "cuda":
             torch.cuda.synchronize(start.device)
         return dict(actions=best_actions, prediction=best_prediction, cost=best_cost,
+                    invalid_candidates=invalid_candidates, evaluated_candidates=evaluated_candidates,
                     prediction_raw_steps=list(range(stride, horizon + 1, stride)),
                     seconds=time.perf_counter()-begin)
 
@@ -112,7 +132,12 @@ def executed_endpoint_mse(plan, actual, observed):
     if actual not in plan["prediction_raw_steps"]:
         return None
     index = plan["prediction_raw_steps"].index(actual)
-    return float((plan["prediction"][index:index + 1]-observed).square().mean())
+    return finite_latent_mse(plan["prediction"][index:index + 1], observed)
+
+
+def finite_latent_mse(a, b):
+    value = float((a-b).square().mean())
+    return value if np.isfinite(value) else None
 
 
 def rendered_frame(env, evaluator, settings):
@@ -182,15 +207,30 @@ def evaluate_planning(model, config, settings, dataset_paths, output, device, *,
                 rng = np.random.default_rng(settings["seed"]+episode)
                 frames = [video_frame(current, goal_image)] if episode < settings["video_episodes"] else []
                 step, success, stopped, warm_start = 0, False, False, None
-                initial_latent_cost = float((model.encoder(current)-goal).square().mean())
+                initial_latent_cost = finite_latent_mse(model.encoder(current), goal)
+                failure = None
+                invalid_candidates = evaluated_candidates = 0
                 plans, rewards, executed, real_goal_distances = [], [], [], []
                 progress = tqdm(total=settings["max_steps"], desc=f"{policy} {episode+1}/{len(cases)}", dynamic_ncols=True)
                 try:
                     while step < settings["max_steps"] and not stopped:
                         start = model.encoder(current)
                         if policy == "cem":
-                            plan = planner.plan(model, start, goal, warm_start)
+                            try:
+                                plan = planner.plan(model, start, goal, warm_start)
+                            except CEMNumericalError as error:
+                                failure = str(error)
+                                invalid_candidates += error.invalid_candidates
+                                evaluated_candidates += error.evaluated_candidates
+                                print(f"[cem] episode {episode+1}, step {step}: {failure}; counted as failure",
+                                      flush=True)
+                                break
                             actions = plan["actions"]
+                            invalid_candidates += plan["invalid_candidates"]
+                            evaluated_candidates += plan["evaluated_candidates"]
+                            if plan["invalid_candidates"]:
+                                print(f"  rejected {plan['invalid_candidates']}/{plan['evaluated_candidates']} "
+                                      "non-finite CEM candidates", flush=True)
                             print(f"  plan step={step}: latent_cost={plan['cost']:.6g}, seconds={plan['seconds']:.2f}", flush=True)
                         else:
                             array = (np.zeros((model.horizon, 2), dtype=np.float32) if policy == "zero" else
@@ -220,9 +260,11 @@ def evaluate_planning(model, config, settings, dataset_paths, output, device, *,
                             # Number actually executed may be <take on success/truncation.
                             actual = step-(plans[-1]["end_step"] if plans else 0)
                             row = dict(end_step=step, cost=plan["cost"], seconds=plan["seconds"],
+                                       invalid_candidates=plan["invalid_candidates"],
+                                       evaluated_candidates=plan["evaluated_candidates"],
                                        executed_raw_steps=actual,
                                        executed_endpoint_mse=executed_endpoint_mse(plan, actual, observed),
-                                       observed_goal_latent_mse=float((observed-goal).square().mean()),
+                                       observed_goal_latent_mse=finite_latent_mse(observed, goal),
                                        environment_goal_distance=real_goal_distances[-1])
                             plans.append(row)
                             np.savez_compressed(policy_dir/f"episode_{episode:03d}_plan_{step:04d}.npz",
@@ -234,23 +276,33 @@ def evaluate_planning(model, config, settings, dataset_paths, output, device, *,
                     progress.close()
                 distances = np.asarray(real_goal_distances)
                 row = dict(episode=episode, success=success, steps=step,
-                           final_goal_distance=float(distances[-1]), best_goal_distance=float(distances.min()),
+                           numerical_failure=failure, invalid_candidates=invalid_candidates,
+                           evaluated_candidates=evaluated_candidates,
+                           final_goal_distance=float(distances[-1]) if step else None,
+                           best_goal_distance=float(distances.min()) if step else None,
                            reward_sum=sum(rewards), initial_goal_latent_mse=initial_latent_cost,
-                           final_goal_latent_mse=float((model.encoder(current)-goal).square().mean()),
-                           mean_executed_displacement_pixels=float(np.linalg.norm(np.asarray(executed)*scale, axis=-1).mean()),
+                           final_goal_latent_mse=finite_latent_mse(model.encoder(current), goal),
+                           mean_executed_displacement_pixels=(
+                               float(np.linalg.norm(np.asarray(executed)*scale, axis=-1).mean()) if step else None),
                            action_low_model_units=low.tolist(), action_high_model_units=high.tolist(), plans=plans,
                            executed_model_actions=executed)
                 rows.append(row)
                 (policy_dir/f"episode_{episode:03d}.json").write_text(json.dumps(row, indent=2))
                 if frames:
                     imageio.mimsave(policy_dir/f"planning_episode_{episode:03d}.mp4", frames, fps=settings["video_fps"])
-                print(f"[{policy}] {episode+1}/{len(cases)} success={success}, final_distance={distances[-1]:.3f}", flush=True)
+                distance = f"{distances[-1]:.3f}" if step else "unavailable"
+                print(f"[{policy}] {episode+1}/{len(cases)} success={success}, final_distance={distance}", flush=True)
             finally:
                 env.close()
+        measured = [row for row in rows if row["steps"]]
         summary = dict(episodes=len(rows), successful_episodes=sum(row["success"] for row in rows),
                        success_rate_percent=100*sum(row["success"] for row in rows)/len(rows),
-                       mean_final_goal_distance=float(np.mean([row["final_goal_distance"] for row in rows])),
-                       mean_best_goal_distance=float(np.mean([row["best_goal_distance"] for row in rows])))
+                       numerical_failures=sum(row["numerical_failure"] is not None for row in rows),
+                       invalid_candidates=sum(row["invalid_candidates"] for row in rows),
+                       evaluated_candidates=sum(row["evaluated_candidates"] for row in rows),
+                       episodes_with_distances=len(measured),
+                       mean_final_goal_distance=float(np.mean([row["final_goal_distance"] for row in measured])) if measured else None,
+                       mean_best_goal_distance=float(np.mean([row["best_goal_distance"] for row in measured])) if measured else None)
         results[policy] = {"summary": summary, "episodes": rows}
         (output/"metrics.json").write_text(json.dumps(results, indent=2))
     return results

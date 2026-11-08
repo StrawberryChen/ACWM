@@ -12,7 +12,7 @@ from torch import nn
 
 from experiments.continuous_dynamics.data import load_config
 from experiments.continuous_dynamics.planning import (
-    LatentTrajectoryCEM, action_bounds, environment_action, evaluate_planning, discover_runs, main)
+    CEMNumericalError, LatentTrajectoryCEM, action_bounds, environment_action, evaluate_planning, discover_runs, main)
 from experiments.continuous_dynamics.trajectory_model import TrajectoryWorldModel
 
 
@@ -116,6 +116,46 @@ class PlanningTests(unittest.TestCase):
         cfg["horizon"] = 2
         with self.assertRaises(ValueError):
             planner.plan(ToyModel(), torch.zeros(1, 2), torch.ones(1, 2))
+
+    def test_cem_uses_only_finite_rollouts_even_with_too_few_elites(self):
+        class FragileModel(ToyModel):
+            def rollout(self, start, actions):
+                result = super().rollout(start, actions)
+                result[actions.abs().any(dim=(1, 2)), 0] = torch.nan
+                return result
+
+        cfg = self.settings()
+        planner = LatentTrajectoryCEM(cfg, [-1, -1], [1, 1], "cpu")
+        plan = planner.plan(FragileModel(), torch.zeros(1, 2), torch.ones(1, 2))
+        self.assertEqual(plan["invalid_candidates"], 14)
+        self.assertEqual(plan["evaluated_candidates"], 16)
+        torch.testing.assert_close(plan["actions"], torch.zeros_like(plan["actions"]))
+        self.assertTrue(torch.isfinite(plan["prediction"]).all())
+        with self.assertRaisesRegex(CEMNumericalError, "non-finite start or goal"):
+            planner.plan(FragileModel(), torch.full((1, 2), torch.nan), torch.ones(1, 2))
+
+    def test_no_finite_plan_is_failure_not_a_skipped_episode(self):
+        class BrokenRollout(ToyModel):
+            def rollout(self, start, actions):
+                return torch.full_like(super().rollout(start, actions), torch.inf)
+
+        settings = {**self.settings(), "video_episodes": 0}
+        case = dict(path="synthetic_test.npz", current=0,
+                    start_state=np.array([100., 100., 256., 256., 0.], dtype=np.float32),
+                    goal_state=np.array([110., 100., 256., 256., 0.], dtype=np.float32))
+        config = dict(model={"image_size": 32}, data={"action_scale": 512.})
+        with (tempfile.TemporaryDirectory() as temp,
+              patch("evaluation.planning.PlanningEvaluator._make_env", side_effect=lambda _: FakeEnv(), autospec=True),
+              patch("evaluation.planning.PlanningEvaluator._dataset_eval_cases", return_value=[case, case])):
+            results = evaluate_planning(BrokenRollout(), config, settings, [], temp, torch.device("cpu"))
+        cem = results["cem"]
+        self.assertEqual(cem["summary"]["episodes"], 2)
+        self.assertEqual(cem["summary"]["success_rate_percent"], 0.)
+        self.assertEqual(cem["summary"]["numerical_failures"], 2)
+        self.assertEqual(cem["summary"]["invalid_candidates"], 16)
+        self.assertIsNone(cem["summary"]["mean_final_goal_distance"])
+        self.assertEqual(cem["episodes"][0]["steps"], 0)
+        self.assertEqual(results["zero"]["episodes"][0]["steps"], 2)
 
     def test_mpc_baselines_same_cases_outputs_videos_and_environment_success(self):
         settings = self.settings()
