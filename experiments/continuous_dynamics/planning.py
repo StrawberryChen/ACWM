@@ -18,7 +18,13 @@ from experiments.avs_target.data import load_config, file_sha256
 from .colab import select_checkpoint
 from .run_paths import checkpoint_path
 from .train import build_model, load_checkpoint, read_checkpoint
-from .leworld_data import planning_cases, uses_leworld
+from .leworld_data import planning_action_statistics, planning_cases, uses_leworld
+
+
+PLANNING_PRESETS = {
+    "legacy": "continuous_trajectory_planning.yaml",
+    "flow_jepa": "continuous_trajectory_planning_flow_jepa.yaml",
+}
 
 
 def action_bounds(env, model_scale, env_scale):
@@ -63,10 +69,19 @@ class LatentTrajectoryCEM:
             raise ValueError("invalid elites or execution horizon")
         if settings["initial_std"] <= 0 or settings["min_std"] <= 0:
             raise ValueError("positive CEM standard deviations required")
+        if settings.get("plan_selection", "best_sample") not in {"elite_mean", "best_sample"}:
+            raise ValueError("unknown CEM plan selection")
         self.low, self.high = (torch.as_tensor(v, device=self.device, dtype=torch.float32) for v in (low, high))
         if self.low.shape != (2,) or self.high.shape != (2,) or not (self.low < self.high).all():
             raise ValueError("ordered two-dimensional model action bounds required")
         self.generator = torch.Generator(device=self.device).manual_seed(settings["seed"])
+        prior = settings.get("action_proposal_stats", {"mean": [0., 0.], "std": [1., 1.]})
+        self.proposal_mean = torch.as_tensor(prior["mean"], dtype=torch.float32, device=self.device)
+        self.proposal_std = torch.as_tensor(prior["std"], dtype=torch.float32, device=self.device)
+        if (self.proposal_mean.shape != (2,) or self.proposal_std.shape != (2,) or
+                not torch.isfinite(self.proposal_mean).all() or not torch.isfinite(self.proposal_std).all() or
+                not (self.proposal_std > 0).all()):
+            raise ValueError("CEM action proposal needs finite mean and positive spread on two axes")
 
     @torch.no_grad()
     def plan(self, model, start, goal, warm_start=None):
@@ -81,11 +96,15 @@ class LatentTrajectoryCEM:
             raise ValueError("use the checkpoint's configured raw-step horizon")
         if not torch.isfinite(start).all() or not torch.isfinite(goal).all():
             raise CEMNumericalError("non-finite start or goal latent")
-        mean = start.new_zeros(horizon, 2)
+        # Affine-equivalent to sampling in standardized coordinates. Keep
+        # candidates and the executed actions in the checkpoint's original units.
+        mean = self.proposal_mean.to(start).expand(horizon, 2).clone()
         if warm_start is not None:
             mean[:len(warm_start)] = warm_start
         mean = mean.clamp(self.low, self.high)
-        std = torch.full_like(mean, cfg["initial_std"])
+        proposal_std = self.proposal_std.to(start)
+        std = (cfg["initial_std"] * proposal_std).expand_as(mean)
+        min_std = cfg["min_std"] * proposal_std
         best_cost, best_actions, best_prediction = float("inf"), None, None
         invalid_candidates = evaluated_candidates = 0
         begin = time.perf_counter()
@@ -118,10 +137,21 @@ class LatentTrajectoryCEM:
                 best_actions, best_prediction = actions[index].clone(), predictions[index].clone()
             elite = actions[costs.topk(min(cfg["num_elites"], valid_count), largest=False).indices]
             mean = elite.mean(0)
-            std = elite.std(0, correction=0).clamp_min(cfg["min_std"])
+            std = torch.maximum(elite.std(0, correction=0), min_std)
+        selection = "best_sample"
+        if cfg.get("plan_selection") == "elite_mean":
+            proposed = mean.clamp(self.low, self.high)
+            prediction = model.rollout(start, proposed[None])[0]
+            cost = (prediction[-1]-goal[0]).square().mean()
+            if torch.isfinite(prediction).all() and torch.isfinite(cost):
+                best_actions, best_prediction, best_cost = proposed, prediction, float(cost)
+                selection = "elite_mean"
+            else:
+                selection = "best_sample_fallback"
         if start.device.type == "cuda":
             torch.cuda.synchronize(start.device)
         return dict(actions=best_actions, prediction=best_prediction, cost=best_cost,
+                    selection=selection,
                     invalid_candidates=invalid_candidates, evaluated_candidates=evaluated_candidates,
                     prediction_raw_steps=list(range(stride, horizon + 1, stride)),
                     seconds=time.perf_counter()-begin)
@@ -260,6 +290,7 @@ def evaluate_planning(model, config, settings, dataset_paths, output, device, *,
                             # Number actually executed may be <take on success/truncation.
                             actual = step-(plans[-1]["end_step"] if plans else 0)
                             row = dict(end_step=step, cost=plan["cost"], seconds=plan["seconds"],
+                                       selection=plan["selection"],
                                        invalid_candidates=plan["invalid_candidates"],
                                        evaluated_candidates=plan["evaluated_candidates"],
                                        executed_raw_steps=actual,
@@ -328,11 +359,14 @@ def main():
     source.add_argument("--training-config", help="repository YAML; read its output_dir")
     source.add_argument("--choose", action="store_true", help="interactively choose an existing Drive experiment")
     parser.add_argument("--runs-root", default="/content/drive/MyDrive/ACWM")
-    parser.add_argument("--planning-config")
+    planning_source = parser.add_mutually_exclusive_group()
+    planning_source.add_argument("--planning-config")
+    planning_source.add_argument("--preset", choices=PLANNING_PRESETS, default="legacy")
     parser.add_argument("--output-dir")
     parser.add_argument("--split", choices=("val", "test"), default="val")
     parser.add_argument("--episodes", type=int)
     parser.add_argument("--max-steps", type=int)
+    parser.add_argument("--execute-steps", type=int, help="number of raw actions to execute before replanning")
     parser.add_argument("--device")
     args = parser.parse_args()
     if args.choose:
@@ -349,14 +383,26 @@ def main():
     config = load_config(args.config) if args.config else deepcopy(saved["config"])
     if config.get("experiment") not in {"continuous_trajectory", "continuous_velocity"}:
         raise ValueError("use a continuous_trajectory or continuous_velocity checkpoint")
-    settings = load_config(args.planning_config or "configs/continuous_trajectory_planning.yaml")
-    if config["experiment"] == "continuous_velocity" and not args.planning_config:
+    preset_path = Path(__file__).resolve().parents[2] / "configs" / PLANNING_PRESETS[args.preset]
+    settings = load_config(args.planning_config or preset_path)
+    if config["experiment"] == "continuous_velocity" and not args.planning_config and args.preset == "legacy":
         settings["goal_offset_steps"] = config["model"]["horizon"]
+    if args.preset == "flow_jepa" and (config["model"].get("horizon") != 25 or
+                                       config["model"].get("action_block") != 5):
+        raise ValueError("Flow-JEPA preset needs a checkpoint with five blocks of five raw actions")
     if config["data"]["action_mode"] != "relative":
         raise ValueError("this planning adapter requires relative-action dataset semantics")
-    for key in ("episodes", "max_steps"):
+    for key in ("episodes", "max_steps", "execute_steps"):
         if getattr(args, key) is not None:
             settings[key] = getattr(args, key)
+    proposal = settings.get("action_proposal", "checkpoint_units")
+    if proposal == "dataset_standardized":
+        if not uses_leworld(config):
+            raise ValueError("dataset-standardized planning requires the LeWorld HDF5 training dataset")
+        settings["action_proposal_stats"] = planning_action_statistics(config)
+        print(f"Fitted action proposal (checkpoint units): {settings['action_proposal_stats']}", flush=True)
+    elif proposal != "checkpoint_units":
+        raise ValueError(f"unknown CEM action proposal: {proposal}")
     if args.device:
         config["device"] = args.device
     device = torch.device(config["device"])
@@ -366,7 +412,9 @@ def main():
     model = build_model(config).to(device)
     load_checkpoint(args.checkpoint, config, model, saved=saved)
     model.eval().requires_grad_(False)
-    output = Path(args.output_dir) if args.output_dir else Path(args.checkpoint).parent.parent/"planning"/f"run_{int(time.time())}"
+    suffix = f"{args.preset}_exec{settings['execute_steps']}" if not args.planning_config else "custom"
+    output = (Path(args.output_dir) if args.output_dir else
+              Path(args.checkpoint).parent.parent/"planning"/f"run_{time.time_ns()}_{suffix}")
     if (output/"metadata.json").exists():
         raise FileExistsError("choose a fresh planning output directory")
     output.mkdir(parents=True, exist_ok=True)
@@ -375,11 +423,14 @@ def main():
                     direction_scope=getattr(model, "direction_scope", None),
                     trajectory_readout_stride=getattr(model, "readout_stride", 1),
                     prediction_raw_stride=getattr(model, "rollout_stride", 1),
-                    split=args.split, settings={**settings, "horizon": model.horizon},
+                    split=args.split, preset=args.preset if not args.planning_config else "custom",
+                    settings={**settings, "horizon": model.horizon},
                     model_action_scale=config["data"]["action_scale"], env_action_scale=settings["env_action_scale"],
                     cost="mean squared terminal predicted latent vs encoded fixed goal image",
                     success="swm environment terminated or info.is_success; not CEM cost or fixed green T overlap",
-                    note="exploratory 10-case evaluation, not a claim of official LeWorld benchmark alignment")
+                    note=("Our checkpoint and dataset split; CEM keeps environment bounds and falls back "
+                          "to a finite sampled plan if the final elite mean diverges. "
+                          "Not a reproduction of Flow-JEPA results."))
     (output/"metadata.json").write_text(json.dumps(metadata, indent=2))
     print(f"Checkpoint: {args.checkpoint}\nPlanning output: {output}\nVideos: actual execution LEFT, fixed goal RIGHT", flush=True)
     result = evaluate_planning(model, config, settings, config["data"].get(f"{args.split}_paths"),

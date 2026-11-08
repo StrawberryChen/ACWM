@@ -111,7 +111,9 @@ Trajectory / Velocity 的 Colab 工作流默认使用官方 HDF5。把压缩包�
 
 在 Colab 的 02 选择 `velocity_obs5_bn`（默认），旧 raw-step 模型仍可选择 `velocity_sigreg`。不重新下载或生成数据。默认 25 个 raw action 打成 5 个有序的 10 维动作块，读取第 0/5/10/15/20/25 帧。每个动作块监督一个相邻观测 latent 差分；从无噪当前 latent 开始，Euler 依次积分 5 个块。视觉投影用 `Linear(192→2048) → BatchNorm1d → GELU → Linear(2048→192)`；原 velocity MSE 和 SIGReg 权重不变。
 
-CEM 仍搜索 25 个 raw action，并用第 25 步预测评分。MPC 仍逐 raw action 执行和重规划，因此默认执行一步时，`executed_endpoint_mse` 为空（没有预测第 1 步）。验证继续记录 `val/pred_step_5/10/15/20/25` 和真实/打乱动作对照。要单独消融 BN，可复制 `configs/colab_velocity_obs5_bn.yaml`，用新实验名并设置 `overrides.model.batchnorm_projector: false`。
+CEM 搜索 25 个 raw action，用第 25 步预测评分。Colab 的 Obs5 Planning 默认使用 Flow-JEPA Push-T 论文设置：每次执行 25 步，目标偏移 25，总预算 50，50 个评估案例，300 候选 / 10 次迭代 / 30 elites。CEM 用训练 split 的动作均值和标准差初始化提议分布；checkpoint 输入、环境动作单位和权重不变。结果仍是本模型在留出数据上的评估，保留动作边界和有限候选检查，并非 Flow-JEPA 结果复现。
+
+用 `flow.plan(preset="legacy")` 复跑旧设置。对照执行节奏时分别运行 `flow.plan(preset="flow_jepa", execute_steps=1)`、`execute_steps=5` 和 `execute_steps=25`，其他条件和案例保持一致。执行一步时 `executed_endpoint_mse` 为空（没有预测第 1 步）。验证仍记录 `val/pred_step_5/10/15/20/25` 和真实/打乱动作对照。要单独消融 BN，可复制 `configs/colab_velocity_obs5_bn.yaml`，用新实验名并设置 `overrides.model.batchnorm_projector: false`。
 
 全量 HDF5 训练按随机打乱的小组混合不同轨迹，缓存每条轨迹解码、缩放后的帧，避免每个重叠窗口随机解压。同一 epoch 仍遍历全部 eligible windows 一次，窗口内容不变。03/04 会在 Colab 单元中转发训练子进程的实时日志：启动阶段、首批、十批、约每 30 秒和每轮结束都会打印；ETA 是本轮估计。首个 batch 的耗时含预取和首次解码。
 

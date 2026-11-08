@@ -144,6 +144,28 @@ def provenance(config):
     return [dict(path=str(path), size=path.stat().st_size, sha256=fingerprint)]
 
 
+def planning_action_statistics(config):
+    """Fit a per-axis action proposal on the checkpoint's training split only."""
+    path = config["data"]["h5_path"]
+    offsets, lengths = episode_metadata(path)
+    train = split_episodes(lengths)["train"]
+    selected = np.zeros(len(lengths), dtype=bool)
+    selected[train] = True
+    keep = np.repeat(selected, lengths)
+    keep[offsets + lengths - 1] = False  # No outgoing transition on the last frame.
+    with _h5(path) as file:
+        native = file["action"][:][keep].astype(np.float64)
+    native = native[np.isfinite(native).all(axis=1)]
+    scale = float(config["data"]["action_scale"])
+    if len(native) < 2 or not np.isfinite(scale) or scale <= 0:
+        raise ValueError("need finite training actions and a positive model action scale")
+    factor = NATIVE_ACTION_SCALE / scale
+    mean, std = native.mean(axis=0) * factor, native.std(axis=0) * factor
+    if not np.isfinite(std).all() or np.any(std <= 0):
+        raise ValueError("dataset-standardized CEM needs positive action spread on both axes")
+    return dict(mean=mean.tolist(), std=std.tolist(), fitted_actions=len(native), split="train")
+
+
 class LeWorldWindows(Dataset):
     """A compact prefix-sum index; no pixel I/O at startup or simulator labels in batches."""
 

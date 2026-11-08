@@ -68,6 +68,16 @@ def test_archive_checks_and_reuse(fixture, tmp_path, monkeypatch):
     assert official.prepare_colab_leworld(archive, target) == target
 
 
+def test_planning_action_prior_uses_train_transitions_and_checkpoint_units(fixture):
+    _, config, offsets, lengths = fixture
+    result = official.planning_action_statistics(config)
+    expected = np.concatenate([np.arange(offsets[i], offsets[i]+lengths[i]-1) / 512
+                               for i in official.split_episodes(lengths)["train"]])
+    assert result["fitted_actions"] == len(expected)
+    np.testing.assert_allclose(result["mean"], expected.mean())
+    np.testing.assert_allclose(result["std"], expected.std())
+
+
 def test_observation_stride_keeps_all_raw_actions_and_probe_frames(fixture):
     _, config, offsets, _ = fixture
     config["model"].update(horizon=6, action_block=3)

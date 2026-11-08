@@ -134,6 +134,25 @@ class PlanningTests(unittest.TestCase):
         with self.assertRaisesRegex(CEMNumericalError, "non-finite start or goal"):
             planner.plan(FragileModel(), torch.full((1, 2), torch.nan), torch.ones(1, 2))
 
+    def test_flow_jepa_preset_uses_standardized_proposals_and_scores_executed_mean(self):
+        preset = load_config("configs/continuous_trajectory_planning_flow_jepa.yaml")
+        self.assertEqual([preset[k] for k in ("episodes", "max_steps", "goal_offset_steps", "execute_steps",
+                                              "num_candidates", "iterations", "num_elites")],
+                         [50, 50, 25, 25, 300, 10, 30])
+        cfg = {**preset, **{k: self.settings()[k] for k in ("horizon", "execute_steps",
+                "num_candidates", "num_elites", "candidate_batch_size")}, "iterations": 1,
+               "action_proposal_stats": {"mean": [0.04, -0.02], "std": [0.02, 0.03]}}
+        model = ToyModel()
+        start, goal = torch.zeros(1, 2), torch.zeros(1, 2)
+        with patch.object(model, "rollout", wraps=model.rollout) as rollout:
+            plan = LatentTrajectoryCEM(cfg, [-1, -1], [1, 1], "cpu").plan(model, start, goal)
+        candidates = torch.cat([call.args[1] for call in rollout.call_args_list[:-1]])
+        torch.testing.assert_close(candidates[0], torch.tensor([.04, -.02]).expand(cfg["horizon"], 2))
+        costs = candidates.sum(1).square().mean(-1)
+        torch.testing.assert_close(plan["actions"], candidates[costs.topk(cfg["num_elites"], largest=False).indices].mean(0))
+        self.assertEqual(plan["selection"], "elite_mean")
+        self.assertAlmostEqual(plan["cost"], float(plan["prediction"][-1].square().mean()))
+
     def test_no_finite_plan_is_failure_not_a_skipped_episode(self):
         class BrokenRollout(ToyModel):
             def rollout(self, start, actions):

@@ -1,0 +1,13 @@
+# Flow-JEPA paper §5.1 Push-T budget, using our existing checkpoint and held-out split.
+base: continuous_trajectory_planning.yaml
+episodes: 50
+max_steps: 50
+goal_offset_steps: 25
+num_candidates: 300
+num_elites: 30
+iterations: 10
+execute_steps: 25
+action_proposal: dataset_standardized
+plan_selection: elite_mean
+initial_std: 1.0  # One dataset standard deviation per action axis.
+min_std: 0.003  # In the same standardized units; numerical floor.

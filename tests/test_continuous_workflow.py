@@ -3,6 +3,7 @@ import contextlib
 import io
 import sys
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -13,6 +14,24 @@ from experiments.continuous_dynamics.checkpoint_io import save_checkpoint, verif
 
 
 class WorkflowTests(TestCase):
+    def test_obs5_planning_defaults_to_flow_jepa_without_legacy_budget_overrides(self):
+        with TemporaryDirectory() as root:
+            flow = workflow.Workflow("unused.yaml", dict(
+                variant="velocity_obs5_bn", run_name="test-run", runs_root=root,
+                dataset="leworld_hdf5", planning={"split": "test", "episodes": 10, "max_steps": 100},
+            ))
+            fake_pymunk = SimpleNamespace(Space=SimpleNamespace(on_collision=True))
+            with (patch.dict(sys.modules, {"pymunk": fake_pymunk}),
+                  patch.object(flow, "_completed"),
+                  patch.object(flow, "_command") as command):
+                flow.plan()
+                self.assertEqual(command.call_args.args[-4:], ("--split", "test", "--preset", "flow_jepa"))
+                flow.plan(execute_steps=5, episodes=10)
+                self.assertEqual(command.call_args.args[-4:], ("--episodes", "10", "--execute-steps", "5"))
+                flow.plan(preset="legacy")
+                self.assertEqual(command.call_args.args[-6:],
+                                 ("--preset", "legacy", "--episodes", "10", "--max-steps", "100"))
+
     def test_streamed_subprocess_sends_stdout_stderr_and_exit_code_to_parent(self):
         with TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()) as output:
             code = workflow._run_streamed(

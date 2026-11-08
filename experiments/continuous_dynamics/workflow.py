@@ -192,15 +192,26 @@ class Workflow:
         self._command("probe", "--checkpoint", str(self.checkpoint), "--no-wandb")
         print(f"Probe metrics: {self.run/'probes/latest/metrics.json'}")
 
-    def plan(self):
+    def plan(self, *, preset=None, execute_steps=None, episodes=None, max_steps=None):
         self._completed()
+        if preset is None:
+            model = self.config["model"]
+            aligned = (uses_leworld(self.config) and self.config["experiment"] == "continuous_velocity"
+                       and model.get("action_block") == 5 and model.get("horizon") == 25)
+            preset = "flow_jepa" if aligned else "legacy"
+        if preset not in {"flow_jepa", "legacy"}:
+            raise ValueError("Planning preset must be flow_jepa or legacy.")
         try:
             import pymunk
         except ImportError as error:
             raise RuntimeError("Install .[colab-trajectory] before running planning.") from error
         if not hasattr(pymunk.Space, "on_collision"):
             raise RuntimeError("Planning requires Pymunk 7; reinstall .[colab-trajectory] and restart the runtime if needed.")
-        self._command("planning", "--checkpoint", str(self.checkpoint),
-                      "--split", self.planning["split"], "--episodes", str(self.planning["episodes"]),
-                      "--max-steps", str(self.planning["max_steps"]))
+        flags = ["--checkpoint", str(self.checkpoint), "--split", self.planning["split"], "--preset", preset]
+        for key, value in (("episodes", episodes), ("max_steps", max_steps), ("execute_steps", execute_steps)):
+            if value is None and preset == "legacy":
+                value = self.planning.get(key)
+            if value is not None:
+                flags.extend(("--" + key.replace("_", "-"), str(value)))
+        self._command("planning", *flags)
         print(f"Planning metrics and videos: {self.run/'planning'}")
