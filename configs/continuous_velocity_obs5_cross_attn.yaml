@@ -1,0 +1,7 @@
+base: continuous_velocity_obs5_bn.yaml
+output_dir: /content/drive/MyDrive/ACWM/trajectory_runs_leworld/velocity_obs5_cross_attn/velocity_obs5_cross_attn_01
+model:
+  action_fusion: cross_attention
+  attention_heads: 4
+wandb:
+  name: velocity_obs5_cross_attn_01

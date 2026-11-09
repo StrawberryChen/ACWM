@@ -16,6 +16,7 @@ from experiments.avs_target.data import merge
 DEFAULT_WORKFLOW = "configs/colab_trajectory.yaml"
 VELOCITY_WORKFLOW = "configs/colab_velocity_sigreg.yaml"
 OBS_VELOCITY_WORKFLOW = "configs/colab_velocity_obs5_bn.yaml"
+OBS_CROSS_ATTN_WORKFLOW = "configs/colab_velocity_obs5_cross_attn.yaml"
 REPO = Path(__file__).resolve().parents[2]
 VARIANTS = {
     "action_per_step": "continuous_trajectory_action_per_step.yaml",
@@ -24,6 +25,7 @@ VARIANTS = {
     "state_action_global": "continuous_trajectory_state_action.yaml",
     "velocity_sigreg": "continuous_velocity_sigreg.yaml",
     "velocity_obs5_bn": "continuous_velocity_obs5_bn.yaml",
+    "velocity_obs5_cross_attn": "continuous_velocity_obs5_cross_attn.yaml",
 }
 
 
@@ -52,7 +54,8 @@ def _run_streamed(command, cwd):
 def configure_colab(variant, run_name, *, overrides=None, planning=None):
     """Persist notebook parameters next to the run; notebook needs no hand-written paths."""
     template = REPO / {"velocity_sigreg": VELOCITY_WORKFLOW,
-                       "velocity_obs5_bn": OBS_VELOCITY_WORKFLOW}.get(variant, DEFAULT_WORKFLOW)
+                       "velocity_obs5_bn": OBS_VELOCITY_WORKFLOW,
+                       "velocity_obs5_cross_attn": OBS_CROSS_ATTN_WORKFLOW}.get(variant, DEFAULT_WORKFLOW)
     settings = load_config(template)
     settings.update(variant=variant, run_name=run_name)
     if overrides:

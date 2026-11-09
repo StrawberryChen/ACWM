@@ -14,13 +14,61 @@ from experiments.continuous_dynamics.data import load_config
 from experiments.continuous_dynamics.losses import objective
 from experiments.continuous_dynamics.planning import LatentTrajectoryCEM, executed_endpoint_mse
 from experiments.continuous_dynamics.train import build_model, main, read_checkpoint
-from experiments.continuous_dynamics.velocity_model import SequentialVelocityWorldModel
+from experiments.continuous_dynamics.velocity_model import CrossAttentionVelocityField, SequentialVelocityWorldModel
 
 
 class DirectVelocityTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         torch.set_num_threads(1)
+
+    def test_cross_attention_obs5_trains_and_plans_with_independent_action_blocks(self):
+        from experiments.continuous_dynamics.diagnostics import evaluate
+        from experiments.continuous_dynamics.workflow import Workflow
+
+        torch.manual_seed(42)
+        config = Workflow.from_yaml("configs/colab_velocity_obs5_cross_attn.yaml").config
+        baseline = Workflow.from_yaml("configs/colab_velocity_obs5_bn.yaml").config
+        for section in ("data", "loss", "training", "validation"):
+            self.assertEqual(config[section], baseline[section])
+        self.assertEqual({k: v for k, v in config["model"].items() if k in baseline["model"]}, baseline["model"])
+        config["model"].update(image_size=32, hidden_dim=8, start_fraction=1)
+        config["loss"]["sigreg_projections"] = 4
+        config["validation"]["action_samples"] = 2
+        model = build_model(config)
+        self.assertIsInstance(model.field, CrossAttentionVelocityField)
+        frames, actions = torch.rand(2, 6, 3, 32, 32), torch.randn(2, 25, 2)
+        with patch.object(model.field.attention, "forward", wraps=model.field.attention.forward) as attention:
+            result = model(frames, actions)
+        query, keys, values = attention.call_args.args
+        self.assertEqual(query.shape, (10, 1, 64))
+        self.assertEqual(keys.shape, (10, 5, 64))
+        self.assertIs(keys, values)
+        self.assertEqual(result["velocity_prediction"].shape, (2, 5, 192))
+        objective(result, **config["loss"])["loss_total"].backward()
+        for weight in (model.field.state_query.weight, model.field.action_position,
+                       model.field.attention.in_proj_weight, model.encoder.projection.net[1].weight):
+            self.assertTrue(torch.isfinite(weight.grad).all())
+            self.assertGreater(weight.grad.norm(), 0)
+
+        stats, values = evaluate(model, [dict(frames=frames, actions=actions)], config, "cpu")
+        self.assertIn("action/shuffle_loss_delta", stats)
+        with torch.no_grad():
+            swapped = actions.clone()
+            swapped[:, 10:15] = swapped[:, 10:15].flip(1)
+            original = model.rollout(values["start"], actions)
+            changed = model.rollout(values["start"], swapped)
+            torch.testing.assert_close(changed[:, :2], original[:, :2], rtol=0, atol=0)
+            self.assertGreater((changed[:, 2] - original[:, 2]).norm(), 0)
+            # Other candidates must not affect a sequence's rollout.
+            torch.testing.assert_close(model.rollout(values["start"][:1], actions[:1]), original[:1])
+        settings = load_config("configs/continuous_trajectory_planning_flow_jepa.yaml")
+        settings.update(horizon=25, num_candidates=4, num_elites=2, iterations=2, candidate_batch_size=2)
+        plan = LatentTrajectoryCEM(settings, [-.1, -.1], [.1, .1], "cpu").plan(
+            model, values["start"][:1], values["target"][:1, -1])
+        self.assertEqual(plan["actions"].shape, (25, 2))
+        self.assertEqual(plan["prediction"].shape, (5, 192))
+        self.assertEqual(plan["prediction_raw_steps"], [5, 10, 15, 20, 25])
 
     def test_alignment_and_direct_gradient_without_euler(self):
         model = SequentialVelocityWorldModel(image_size=32, hidden_dim=8, horizon=5, readout_stride=5,

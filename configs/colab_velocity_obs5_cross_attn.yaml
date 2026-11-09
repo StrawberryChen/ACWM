@@ -1,0 +1,3 @@
+base: colab_velocity_obs5_bn.yaml
+variant: velocity_obs5_cross_attn
+run_name: velocity_obs5_cross_attn_01
