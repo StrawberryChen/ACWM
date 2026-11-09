@@ -115,6 +115,8 @@ CEM 搜索 25 个 raw action，用第 25 步预测评分。Colab 的 Obs5 Planni
 
 用 `flow.plan(preset="legacy")` 复跑旧设置。对照执行节奏时分别运行 `flow.plan(preset="flow_jepa", execute_steps=1)`、`execute_steps=5` 和 `execute_steps=25`，其他条件和案例保持一致。执行一步时 `executed_endpoint_mse` 为空（没有预测第 1 步）。验证仍记录 `val/pred_step_5/10/15/20/25` 和真实/打乱动作对照。要单独消融 BN，可复制 `configs/colab_velocity_obs5_bn.yaml`，用新实验名并设置 `overrides.model.batchnorm_projector: false`。
 
+仅对照 Euler 步数时，不改 02 的训练参数，用同一个 `flow` 分别运行 `flow.plan(preset="flow_jepa", euler_steps=1)` 和 `flow.plan(preset="flow_jepa", euler_steps=2)`。两个调用保持同一 checkpoint、50 个案例、25 raw step 预测和执行间隔；`euler_steps` 只改变每个动作块的内部积分次数。结果各自写入带 `_euler1` / `_euler2` 后缀的新目录。除闭环成功率外，`metrics.json` 的 `cem.summary.fixed_expert_rollout` 还记录同一批数据集起点、真实动作序列下的逐 OBS latent MSE（`raw_step_5/10/15/20/25`）和有限样本数；这些动作只用于诊断，不进入 CEM。
+
 全量 HDF5 训练按随机打乱的小组混合不同轨迹，缓存每条轨迹解码、缩放后的帧，避免每个重叠窗口随机解压。同一 epoch 仍遍历全部 eligible windows 一次，窗口内容不变。03/04 会在 Colab 单元中转发训练子进程的实时日志：启动阶段、首批、十批、约每 30 秒和每轮结束都会打印；ETA 是本轮估计。首个 batch 的耗时含预取和首次解码。
 
 ## 多步训练接口

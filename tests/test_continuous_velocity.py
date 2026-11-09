@@ -154,3 +154,17 @@ class DirectVelocityTests(unittest.TestCase):
                 planning()
             self.assertEqual(run.call_args.args[2]["goal_offset_steps"], 5)
             self.assertEqual(json.loads((root/"planning/metadata.json").read_text())["trajectory_readout_stride"], 5)
+            before = checkpoint.read_bytes()
+            for steps in (1, 2):
+                with (patch("sys.argv", ["planning", "--checkpoint", str(checkpoint), "--euler-steps", str(steps)]),
+                      patch("experiments.continuous_dynamics.planning.evaluate_planning", return_value={}) as run):
+                    planning()
+                planned, plan_config, settings, _, output, _ = run.call_args.args
+                self.assertEqual(plan_config["model"]["integration_steps"], 2)
+                self.assertEqual(planned.integrator.steps, steps)
+                self.assertEqual(settings["goal_offset_steps"], 5)
+                self.assertTrue(output.name.endswith(f"_euler{steps}"))
+                metadata = json.loads((output/"metadata.json").read_text())
+                self.assertEqual(metadata["rollout_euler_steps"], steps)
+                self.assertEqual(metadata["checkpoint_euler_steps"], 2)
+            self.assertEqual(before, checkpoint.read_bytes())

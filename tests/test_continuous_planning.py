@@ -12,7 +12,8 @@ from torch import nn
 
 from experiments.continuous_dynamics.data import load_config
 from experiments.continuous_dynamics.planning import (
-    CEMNumericalError, LatentTrajectoryCEM, action_bounds, environment_action, evaluate_planning, discover_runs, main)
+    CEMNumericalError, LatentTrajectoryCEM, action_bounds, environment_action, evaluate_planning, discover_runs,
+    main, reference_rollout_metrics)
 from experiments.continuous_dynamics.trajectory_model import TrajectoryWorldModel
 
 
@@ -82,6 +83,23 @@ class PlanningTests(unittest.TestCase):
             environment_action([1., 0.], env, 512., 100.)
         with self.assertRaises(ValueError):
             action_bounds(env, 0., 100.)
+
+    def test_fixed_expert_rollout_uses_only_the_first_observation_and_tracks_finite_counts(self):
+        model = ToyModel()
+        model.rollout_stride = 1
+        frames = torch.tensor([0., 2., 2., 4.])[:, None, None, None].expand(4, 3, 2, 2)
+        actions = torch.ones(3, 2)
+        invalid = actions.clone()
+        invalid[-1] = torch.inf
+        cases = [{"reference": dict(frames=frames, actions=a)} for a in (actions, invalid)]
+        with patch.object(model, "rollout", wraps=model.rollout) as rollout:
+            result = reference_rollout_metrics(model, cases, torch.device("cpu"))
+        self.assertTrue(all(torch.equal(call.args[0], torch.zeros(1, 2)) for call in rollout.call_args_list))
+        self.assertEqual(result, {
+            "raw_step_1": dict(mean_mse=1., finite_cases=2, total_cases=2),
+            "raw_step_2": dict(mean_mse=0., finite_cases=2, total_cases=2),
+            "raw_step_3": dict(mean_mse=1., finite_cases=1, total_cases=2),
+        })
 
     def test_cem_recomputes_candidate_arrows_and_returns_evaluated_cost(self):
         cfg = self.settings()

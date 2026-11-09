@@ -192,7 +192,9 @@ class Workflow:
         self._command("probe", "--checkpoint", str(self.checkpoint), "--no-wandb")
         print(f"Probe metrics: {self.run/'probes/latest/metrics.json'}")
 
-    def plan(self, *, preset=None, execute_steps=None, episodes=None, max_steps=None):
+    def plan(self, *, preset=None, execute_steps=None, episodes=None, max_steps=None, euler_steps=None):
+        if euler_steps is not None and (type(euler_steps) is not int or euler_steps < 1):
+            raise ValueError("euler_steps must be a positive integer")
         self._completed()
         if preset is None:
             model = self.config["model"]
@@ -213,5 +215,7 @@ class Workflow:
                 value = self.planning.get(key)
             if value is not None:
                 flags.extend(("--" + key.replace("_", "-"), str(value)))
+        if euler_steps is not None:
+            flags.extend(("--euler-steps", str(euler_steps)))
         self._command("planning", *flags)
         print(f"Planning metrics and videos: {self.run/'planning'}")

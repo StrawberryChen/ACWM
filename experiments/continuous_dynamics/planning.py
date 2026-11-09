@@ -170,6 +170,27 @@ def finite_latent_mse(a, b):
     return value if np.isfinite(value) else None
 
 
+@torch.no_grad()
+def reference_rollout_metrics(model, cases, device):
+    """Measure both solvers on identical recorded frames/actions, independent of CEM."""
+    stride = model.rollout_stride
+    errors = [[] for _ in range(model.horizon // stride)]
+    for case in tqdm(cases, desc="Fixed expert-action rollout"):
+        sample = case["reference"]
+        real = model.encoder(sample["frames"].to(device))  # [1+H_obs,D]
+        predicted = model.rollout(real[:1], sample["actions"][None].to(device))[0]  # [H_obs,D]
+        assert predicted.shape == real[1:].shape and len(predicted) == len(errors)
+        for values, prediction, target in zip(errors, predicted, real[1:]):
+            mse = finite_latent_mse(prediction, target)
+            if mse is not None:
+                values.append(mse)
+    return {
+        f"raw_step_{(i+1)*stride}": dict(mean_mse=float(np.mean(values)) if values else None,
+                                        finite_cases=len(values), total_cases=len(cases))
+        for i, values in enumerate(errors)
+    }
+
+
 def rendered_frame(env, evaluator, settings):
     # Preserve training's fixed green drawing marker, while actual evaluation
     # goal_state remains the sampled dataset state. Never conflate these goals.
@@ -208,7 +229,11 @@ def evaluate_planning(model, config, settings, dataset_paths, output, device, *,
                                             goal_offset_steps=settings["goal_offset_steps"]),
                                   1, 2, device, dataset_paths=dataset_paths or [])
     print("Sampling fixed dataset start/goal cases (state labels used ONLY for environment evaluation)...", flush=True)
-    cases = (planning_cases(config, split, settings["episodes"], settings["goal_offset_steps"], settings["seed"])
+    reference_stride = (model.rollout_stride if settings.get("euler_ablation")
+                        and settings["goal_offset_steps"] == model.horizon else None)
+    reference_options = {"reference_stride": reference_stride} if reference_stride is not None else {}
+    cases = (planning_cases(config, split, settings["episodes"], settings["goal_offset_steps"], settings["seed"],
+                            **reference_options)
              if uses_leworld(config) else evaluator._dataset_eval_cases(settings["episodes"]))
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
@@ -216,6 +241,10 @@ def evaluate_planning(model, config, settings, dataset_paths, output, device, *,
         dict(path=case["path"], source_episode=case.get("source_episode"),
              timestep=int(case["current"]), start=case["start_state"].tolist(),
              goal=case["goal_state"].tolist()) for case in cases], indent=2))
+    reference = (reference_rollout_metrics(model, cases, device)
+                 if uses_leworld(config) and reference_stride is not None else None)
+    if reference is not None:
+        print(f"Fixed expert-action rollout: {json.dumps(reference)}", flush=True)
     scale = float(config["data"]["action_scale"])
     results = {}
     for policy in settings["policies"]:
@@ -334,6 +363,8 @@ def evaluate_planning(model, config, settings, dataset_paths, output, device, *,
                        episodes_with_distances=len(measured),
                        mean_final_goal_distance=float(np.mean([row["final_goal_distance"] for row in measured])) if measured else None,
                        mean_best_goal_distance=float(np.mean([row["best_goal_distance"] for row in measured])) if measured else None)
+        if policy == "cem" and reference is not None:
+            summary["fixed_expert_rollout"] = reference
         results[policy] = {"summary": summary, "episodes": rows}
         (output/"metrics.json").write_text(json.dumps(results, indent=2))
     return results
@@ -367,6 +398,7 @@ def main():
     parser.add_argument("--episodes", type=int)
     parser.add_argument("--max-steps", type=int)
     parser.add_argument("--execute-steps", type=int, help="number of raw actions to execute before replanning")
+    parser.add_argument("--euler-steps", type=int, help="inference-only Euler substeps per velocity action block")
     parser.add_argument("--device")
     args = parser.parse_args()
     if args.choose:
@@ -383,6 +415,11 @@ def main():
     config = load_config(args.config) if args.config else deepcopy(saved["config"])
     if config.get("experiment") not in {"continuous_trajectory", "continuous_velocity"}:
         raise ValueError("use a continuous_trajectory or continuous_velocity checkpoint")
+    if args.euler_steps is not None:
+        if args.euler_steps < 1:
+            parser.error("--euler-steps must be a positive integer")
+        if config["experiment"] != "continuous_velocity":
+            parser.error("--euler-steps requires a continuous_velocity checkpoint")
     preset_path = Path(__file__).resolve().parents[2] / "configs" / PLANNING_PRESETS[args.preset]
     settings = load_config(args.planning_config or preset_path)
     if config["experiment"] == "continuous_velocity" and not args.planning_config and args.preset == "legacy":
@@ -412,7 +449,15 @@ def main():
     model = build_model(config).to(device)
     load_checkpoint(args.checkpoint, config, model, saved=saved)
     model.eval().requires_grad_(False)
+    checkpoint_euler_steps = model.integrator.steps if config["experiment"] == "continuous_velocity" else None
     suffix = f"{args.preset}_exec{settings['execute_steps']}" if not args.planning_config else "custom"
+    if args.euler_steps is not None:
+        # Do not change the saved model config or relax the strict checkpoint check.
+        model.integrator.steps = args.euler_steps
+        settings["euler_ablation"] = True
+        suffix += f"_euler{args.euler_steps}"
+        print(f"Euler substeps per action block: {args.euler_steps} (checkpoint default: {checkpoint_euler_steps})",
+              flush=True)
     output = (Path(args.output_dir) if args.output_dir else
               Path(args.checkpoint).parent.parent/"planning"/f"run_{time.time_ns()}_{suffix}")
     if (output/"metadata.json").exists():
@@ -423,6 +468,8 @@ def main():
                     direction_scope=getattr(model, "direction_scope", None),
                     trajectory_readout_stride=getattr(model, "readout_stride", 1),
                     prediction_raw_stride=getattr(model, "rollout_stride", 1),
+                    checkpoint_euler_steps=checkpoint_euler_steps,
+                    rollout_euler_steps=args.euler_steps if args.euler_steps is not None else checkpoint_euler_steps,
                     split=args.split, preset=args.preset if not args.planning_config else "custom",
                     settings={**settings, "horizon": model.horizon},
                     model_action_scale=config["data"]["action_scale"], env_action_scale=settings["env_action_scale"],

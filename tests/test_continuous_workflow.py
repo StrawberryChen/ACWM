@@ -28,6 +28,11 @@ class WorkflowTests(TestCase):
                 self.assertEqual(command.call_args.args[-4:], ("--split", "test", "--preset", "flow_jepa"))
                 flow.plan(execute_steps=5, episodes=10)
                 self.assertEqual(command.call_args.args[-4:], ("--episodes", "10", "--execute-steps", "5"))
+                flow.plan(euler_steps=1)
+                self.assertEqual(command.call_args.args[-6:],
+                                 ("--split", "test", "--preset", "flow_jepa", "--euler-steps", "1"))
+                with self.assertRaisesRegex(ValueError, "positive integer"):
+                    flow.plan(euler_steps=0)
                 flow.plan(preset="legacy")
                 self.assertEqual(command.call_args.args[-6:],
                                  ("--preset", "legacy", "--episodes", "10", "--max-steps", "100"))

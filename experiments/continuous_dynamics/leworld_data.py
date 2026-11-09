@@ -309,8 +309,8 @@ class EpisodeLocalBatchSampler(Sampler):
             yield batch
 
 
-def planning_cases(config, split, count, goal_offset, seed):
-    dataset = LeWorldWindows(config, split, goal_offset)
+def planning_cases(config, split, count, goal_offset, seed, *, reference_stride=None):
+    dataset = LeWorldWindows(config, split, goal_offset, observation_stride=reference_stride or 1)
     if count > len(dataset):
         raise ValueError(f"requested {count} cases but only {len(dataset)} starts available")
     indices = np.random.default_rng(seed).choice(len(dataset), size=count, replace=False)
@@ -318,6 +318,9 @@ def planning_cases(config, split, count, goal_offset, seed):
     for index in indices:
         episode, t = dataset.window_index(int(index))
         rows = dataset.episode_states(episode)
-        cases.append(dict(path=dataset.path, source_episode=episode, current=t,
-                          start_state=rows[t], goal_state=rows[t + goal_offset]))
+        case = dict(path=dataset.path, source_episode=episode, current=t,
+                    start_state=rows[t], goal_state=rows[t + goal_offset])
+        if reference_stride is not None:
+            case["reference"] = dataset[int(index)]  # Held-out expert rollout diagnostic only.
+        cases.append(case)
     return cases

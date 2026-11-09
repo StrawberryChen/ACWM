@@ -47,6 +47,12 @@ def test_hdf5_window_alignment_split_and_planning(fixture):
     assert all(c["source_episode"] in splits["test"] for c in cases)
     assert all(c["goal_state"][0] - c["start_state"][0] == 3 for c in cases)
     assert [c["current"] for c in cases] == [c["current"] for c in official.planning_cases(config, "test", 2, 3, 42)]
+    reference_cases = official.planning_cases(config, "test", 2, 3, 42, reference_stride=3)
+    for case, paired in zip(cases, reference_cases):
+        assert case["source_episode"] == paired["source_episode"] and case["current"] == paired["current"]
+        start = case["start_state"][0]
+        np.testing.assert_allclose(paired["reference"]["frames"][:, 0, 0, 0]*255, [start, start+3])
+        np.testing.assert_allclose(paired["reference"]["actions"][:, 0]*512, np.arange(start, start+3))
 
 
 def test_archive_checks_and_reuse(fixture, tmp_path, monkeypatch):
